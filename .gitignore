@@ -1,0 +1,10 @@
+﻿build/
+build-*/
+cmake-build-*/
+*.user
+*.pro.user
+.qmlproject.user
+.DS_Store
+.idea/
+.vscode/
+

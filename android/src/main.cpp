@@ -1,0 +1,26 @@
+﻿#include "ClipboardBridge.h"
+#include "NetworkClipboardClient.h"
+
+#include <QGuiApplication>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
+#include <QQuickStyle>
+
+int main(int argc, char *argv[])
+{
+    QGuiApplication app(argc, argv);
+    QQuickStyle::setStyle(QStringLiteral("Material"));
+
+    NetworkClipboardClient client;
+    ClipboardBridge clipboard;
+
+    QQmlApplicationEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("networkClipboard"), &client);
+    engine.rootContext()->setContextProperty(QStringLiteral("localClipboard"), &clipboard);
+    engine.loadFromModule(QStringLiteral("NetworkClipboardAndroid"), QStringLiteral("Main"));
+
+    if (engine.rootObjects().isEmpty())
+        return 1;
+
+    return app.exec();
+}
