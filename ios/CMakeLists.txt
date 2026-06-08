@@ -17,6 +17,10 @@ qt_add_executable(NetworkClipboardIOS
     src/ClipboardBridge.h
 )
 
+set_source_files_properties(qml/Main.qml
+    PROPERTIES QT_RESOURCE_ALIAS Main.qml
+)
+
 qt_add_qml_module(NetworkClipboardIOS
     URI NetworkClipboardIOS
     VERSION 1.0
@@ -31,5 +35,6 @@ if(IOS)
     set_target_properties(NetworkClipboardIOS PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_GUI_IDENTIFIER de.localtools.networkclipboard
+        XCODE_ATTRIBUTE_INFOPLIST_KEY_NSLocalNetworkUsageDescription "Network Clipboard sucht im lokalen Netzwerk nach dem Clipboard-Server."
     )
 endif()

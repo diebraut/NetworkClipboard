@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QObject>
 #include <QTcpServer>
+#include <QUdpSocket>
 
 class QTcpSocket;
 
@@ -28,6 +29,7 @@ private:
     };
 
     void handleConnection();
+    void handleDiscoveryDatagram();
     void handleReadyRead(QTcpSocket *socket);
     void processRequest(QTcpSocket *socket, const HttpRequest &request);
     bool parseRequest(const QByteArray &raw, HttpRequest *request, QString *errorMessage) const;
@@ -38,5 +40,6 @@ private:
 
     ClipboardStore *m_store = nullptr;
     QTcpServer m_server;
+    QUdpSocket m_discoverySocket;
     QString m_token;
 };

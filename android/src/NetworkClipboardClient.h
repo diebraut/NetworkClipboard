@@ -2,7 +2,10 @@
 
 #include <QNetworkAccessManager>
 #include <QObject>
+#include <QSet>
 #include <QString>
+#include <QUdpSocket>
+#include <QUrl>
 
 class NetworkClipboardClient : public QObject
 {
@@ -24,6 +27,7 @@ public:
 
     Q_INVOKABLE void sendText(const QString &text, const QString &deviceName);
     Q_INVOKABLE void getLatest();
+    Q_INVOKABLE void discoverServer();
 
 signals:
     void serverUrlChanged();
@@ -33,10 +37,15 @@ signals:
 
 private:
     QNetworkRequest request(const QString &path) const;
+    void handleDiscoveryResponse();
+    void probeDiscoveryUrl(const QUrl &url);
+    void startHttpDiscovery();
     void setStatus(const QString &status);
 
     QNetworkAccessManager m_network;
-    QString m_serverUrl = QStringLiteral("http://192.168.178.1:8787");
+    QUdpSocket m_discoverySocket;
+    QSet<QString> m_pendingDiscoveryUrls;
+    QString m_serverUrl;
     QString m_token;
     QString m_status = QStringLiteral("Ready");
 };

@@ -3,9 +3,76 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QNetworkDatagram>
+#include <QNetworkInterface>
 #include <QTcpSocket>
 
 namespace {
+constexpr quint16 DiscoveryPort = 8788;
+constexpr auto DiscoveryRequest = "NETWORK_CLIPBOARD_DISCOVER_V1";
+
+QStringList localServerUrls(quint16 port)
+{
+    QStringList urls;
+
+    const auto interfaces = QNetworkInterface::allInterfaces();
+    for (const QNetworkInterface &networkInterface : interfaces) {
+        const auto flags = networkInterface.flags();
+        if (!flags.testFlag(QNetworkInterface::IsUp)
+            || !flags.testFlag(QNetworkInterface::IsRunning)
+            || flags.testFlag(QNetworkInterface::IsLoopBack)) {
+            continue;
+        }
+
+        const auto entries = networkInterface.addressEntries();
+        for (const QNetworkAddressEntry &entry : entries) {
+            const QHostAddress address = entry.ip();
+            if (address.protocol() != QAbstractSocket::IPv4Protocol || address.isLoopback())
+                continue;
+
+            const QString ip = address.toString();
+            if (ip.startsWith(QStringLiteral("169.254.")))
+                continue;
+
+            urls.append(QStringLiteral("http://%1:%2").arg(ip).arg(port));
+        }
+    }
+
+    urls.removeDuplicates();
+    return urls;
+}
+
+QString subnetMatchedServerUrl(const QHostAddress &peerAddress, quint16 port)
+{
+    if (peerAddress.protocol() != QAbstractSocket::IPv4Protocol)
+        return {};
+
+    const quint32 peer = peerAddress.toIPv4Address();
+    const auto interfaces = QNetworkInterface::allInterfaces();
+    for (const QNetworkInterface &networkInterface : interfaces) {
+        const auto flags = networkInterface.flags();
+        if (!flags.testFlag(QNetworkInterface::IsUp)
+            || !flags.testFlag(QNetworkInterface::IsRunning)
+            || flags.testFlag(QNetworkInterface::IsLoopBack)) {
+            continue;
+        }
+
+        const auto entries = networkInterface.addressEntries();
+        for (const QNetworkAddressEntry &entry : entries) {
+            const QHostAddress address = entry.ip();
+            const QHostAddress netmask = entry.netmask();
+            if (address.protocol() != QAbstractSocket::IPv4Protocol || netmask.protocol() != QAbstractSocket::IPv4Protocol)
+                continue;
+
+            const quint32 mask = netmask.toIPv4Address();
+            if ((address.toIPv4Address() & mask) == (peer & mask))
+                return QStringLiteral("http://%1:%2").arg(address.toString()).arg(port);
+        }
+    }
+
+    return {};
+}
+
 QByteArray reasonPhrase(int statusCode)
 {
     switch (statusCode) {
@@ -24,6 +91,7 @@ ApiServer::ApiServer(ClipboardStore *store, QObject *parent)
     : QObject(parent), m_store(store)
 {
     connect(&m_server, &QTcpServer::newConnection, this, &ApiServer::handleConnection);
+    connect(&m_discoverySocket, &QUdpSocket::readyRead, this, &ApiServer::handleDiscoveryDatagram);
 }
 
 bool ApiServer::start(quint16 port, const QString &token, QString *errorMessage)
@@ -36,6 +104,10 @@ bool ApiServer::start(quint16 port, const QString &token, QString *errorMessage)
         if (errorMessage)
             *errorMessage = m_server.errorString();
         return false;
+    }
+
+    if (m_discoverySocket.state() != QAbstractSocket::BoundState) {
+        m_discoverySocket.bind(QHostAddress::AnyIPv4, DiscoveryPort, QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint);
     }
 
     return true;
@@ -55,6 +127,36 @@ void ApiServer::handleConnection()
     }
 }
 
+void ApiServer::handleDiscoveryDatagram()
+{
+    while (m_discoverySocket.hasPendingDatagrams()) {
+        QNetworkDatagram datagram = m_discoverySocket.receiveDatagram();
+        if (QString::fromUtf8(datagram.data()).trimmed() != QLatin1String(DiscoveryRequest))
+            continue;
+
+        QStringList urls = localServerUrls(m_server.serverPort());
+        const QString matchedUrl = subnetMatchedServerUrl(datagram.senderAddress(), m_server.serverPort());
+        if (!matchedUrl.isEmpty()) {
+            urls.removeAll(matchedUrl);
+            urls.prepend(matchedUrl);
+        }
+
+        QJsonArray urlArray;
+        for (const QString &url : urls)
+            urlArray.append(url);
+
+        const QJsonObject response{
+            {QStringLiteral("service"), QStringLiteral("NetworkClipboard")},
+            {QStringLiteral("url"), urls.value(0)},
+            {QStringLiteral("urls"), urlArray},
+            {QStringLiteral("token"), m_token}
+        };
+        m_discoverySocket.writeDatagram(QJsonDocument(response).toJson(QJsonDocument::Compact),
+                                        datagram.senderAddress(),
+                                        datagram.senderPort());
+    }
+}
+
 void ApiServer::handleReadyRead(QTcpSocket *socket)
 {
     const QByteArray raw = socket->readAll();
@@ -70,6 +172,28 @@ void ApiServer::handleReadyRead(QTcpSocket *socket)
 
 void ApiServer::processRequest(QTcpSocket *socket, const HttpRequest &request)
 {
+    if (request.method == QStringLiteral("GET") && request.path == QStringLiteral("/api/discovery")) {
+        QStringList urls = localServerUrls(m_server.serverPort());
+        const QHostAddress localAddress = socket->localAddress();
+        if (localAddress.protocol() == QAbstractSocket::IPv4Protocol && !localAddress.isLoopback()) {
+            const QString connectedUrl = QStringLiteral("http://%1:%2").arg(localAddress.toString()).arg(m_server.serverPort());
+            urls.removeAll(connectedUrl);
+            urls.prepend(connectedUrl);
+        }
+
+        QJsonArray urlArray;
+        for (const QString &url : urls)
+            urlArray.append(url);
+
+        sendJson(socket, 200, {
+            {QStringLiteral("service"), QStringLiteral("NetworkClipboard")},
+            {QStringLiteral("url"), urls.value(0)},
+            {QStringLiteral("urls"), urlArray},
+            {QStringLiteral("token"), m_token}
+        });
+        return;
+    }
+
     if (!isAuthorized(request)) {
         sendError(socket, 401, QStringLiteral("Missing or invalid bearer token."));
         return;

@@ -17,6 +17,10 @@ qt_add_executable(NetworkClipboardAndroid
     src/ClipboardBridge.h
 )
 
+set_source_files_properties(qml/Main.qml
+    PROPERTIES QT_RESOURCE_ALIAS Main.qml
+)
+
 qt_add_qml_module(NetworkClipboardAndroid
     URI NetworkClipboardAndroid
     VERSION 1.0

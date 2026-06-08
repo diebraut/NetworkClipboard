@@ -2,10 +2,46 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QAbstractSocket>
 #include <QClipboard>
 #include <QDateTime>
+#include <QHostAddress>
 #include <QMenu>
+#include <QNetworkInterface>
 #include <QStyle>
+
+namespace {
+QStringList localServerUrls(quint16 port)
+{
+    QStringList urls;
+
+    const auto interfaces = QNetworkInterface::allInterfaces();
+    for (const QNetworkInterface &networkInterface : interfaces) {
+        const auto flags = networkInterface.flags();
+        if (!flags.testFlag(QNetworkInterface::IsUp)
+            || !flags.testFlag(QNetworkInterface::IsRunning)
+            || flags.testFlag(QNetworkInterface::IsLoopBack)) {
+            continue;
+        }
+
+        const auto entries = networkInterface.addressEntries();
+        for (const QNetworkAddressEntry &entry : entries) {
+            const QHostAddress address = entry.ip();
+            if (address.protocol() != QAbstractSocket::IPv4Protocol || address.isLoopback())
+                continue;
+
+            const QString ip = address.toString();
+            if (ip.startsWith(QStringLiteral("169.254.")))
+                continue;
+
+            urls.append(QStringLiteral("http://%1:%2").arg(ip).arg(port));
+        }
+    }
+
+    urls.removeDuplicates();
+    return urls;
+}
+}
 
 TrayController::TrayController(ClipboardStore *store, const QString &deviceId, const QString &deviceName, QObject *parent)
     : QObject(parent), m_store(store), m_clipboard(QApplication::clipboard()), m_deviceId(deviceId), m_deviceName(deviceName)
@@ -93,7 +129,11 @@ void TrayController::pasteFromNetwork()
 
 void TrayController::copyServerInfo()
 {
-    const QString info = QStringLiteral("URL: http://<windows-lan-ip>:%1\nAuthorization: Bearer %2").arg(m_port).arg(m_token);
+    const QStringList urls = localServerUrls(m_port);
+    const QString urlText = urls.isEmpty()
+        ? QStringLiteral("http://<windows-lan-ip>:%1").arg(m_port)
+        : urls.join(QLatin1Char('\n'));
+    const QString info = QStringLiteral("URL:\n%1\nAuthorization: Bearer %2").arg(urlText, m_token);
     m_suppressNextClipboardChange = true;
     m_clipboard->setText(info);
     m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Server info copied to clipboard."));

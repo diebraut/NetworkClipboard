@@ -5,6 +5,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
+#include <QUrl>
 
 int main(int argc, char *argv[])
 {
@@ -17,7 +18,7 @@ int main(int argc, char *argv[])
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("networkClipboard"), &client);
     engine.rootContext()->setContextProperty(QStringLiteral("localClipboard"), &clipboard);
-    engine.loadFromModule(QStringLiteral("NetworkClipboardIOS"), QStringLiteral("Main"));
+    engine.load(QUrl(QStringLiteral("qrc:/NetworkClipboardIOS/Main.qml")));
 
     if (engine.rootObjects().isEmpty())
         return 1;

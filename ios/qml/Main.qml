@@ -8,6 +8,20 @@ ApplicationWindow {
     visible: true
     title: "Network Clipboard"
 
+    function applySettings() {
+        const text = (serverUrlField.text + "\n" + tokenField.text).trim()
+        const urlMatch = text.match(/https?:\/\/[^\s]+/)
+        const tokenMatch = text.match(/Bearer\s+([^\s]+)/i)
+
+        const serverUrl = urlMatch ? urlMatch[0].replace(/\/+$/, "") : serverUrlField.text.trim().replace(/\/+$/, "")
+        const token = tokenMatch ? tokenMatch[1] : tokenField.text.trim().replace(/^Bearer\s+/i, "")
+
+        serverUrlField.text = serverUrl
+        tokenField.text = token
+        networkClipboard.serverUrl = serverUrl
+        networkClipboard.token = token
+    }
+
     Connections {
         target: networkClipboard
         function onLatestReceived(text) {
@@ -29,30 +43,46 @@ ApplicationWindow {
         }
 
         TextField {
-            placeholderText: "Server URL"
+            id: serverUrlField
+            placeholderText: "Server URL, z.B. http://192.168.178.42:8787"
             text: networkClipboard.serverUrl
             Layout.fillWidth: true
             onEditingFinished: networkClipboard.serverUrl = text
+            onAccepted: applySettings()
         }
 
         TextField {
+            id: tokenField
             placeholderText: "API token"
             echoMode: TextInput.Password
             text: networkClipboard.token
             Layout.fillWidth: true
             onEditingFinished: networkClipboard.token = text
+            onAccepted: applySettings()
+        }
+
+        Button {
+            text: "Server suchen"
+            Layout.fillWidth: true
+            onClicked: networkClipboard.discoverServer()
         }
 
         Button {
             text: "Send Clipboard to Network"
             Layout.fillWidth: true
-            onClicked: networkClipboard.sendText(localClipboard.text(), Qt.platform.os === "ios" ? "iPhone" : "Android")
+            onClicked: {
+                applySettings()
+                networkClipboard.sendText(localClipboard.text(), Qt.platform.os === "ios" ? "iPhone" : "Android")
+            }
         }
 
         Button {
             text: "Get from Network Clipboard"
             Layout.fillWidth: true
-            onClicked: networkClipboard.getLatest()
+            onClicked: {
+                applySettings()
+                networkClipboard.getLatest()
+            }
         }
 
         TextArea {
