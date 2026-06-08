@@ -2,6 +2,7 @@
 
 #include "ClipboardStore.h"
 
+#include <QDateTime>
 #include <QObject>
 #include <QSystemTrayIcon>
 
@@ -35,6 +36,7 @@ private:
     QString m_token;
     quint16 m_port = 8787;
     bool m_autoSendEnabled = true;
-    bool m_suppressNextClipboardChange = false;
+    qint64 m_ignoreClipboardChangesUntil = 0;
+    QString m_ignoredClipboardContent;
     QString m_lastPublishedContent;
 };

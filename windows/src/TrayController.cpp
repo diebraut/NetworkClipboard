@@ -9,8 +9,11 @@
 #include <QMenu>
 #include <QNetworkInterface>
 #include <QStyle>
+#include <QUuid>
 
 namespace {
+constexpr qint64 ClipboardIgnoreWindowMs = 1500;
+
 QStringList localServerUrls(quint16 port)
 {
     QStringList urls;
@@ -84,19 +87,19 @@ void TrayController::setServerInfo(quint16 port, const QString &token)
 
 void TrayController::onClipboardChanged()
 {
-    if (m_suppressNextClipboardChange) {
-        m_suppressNextClipboardChange = false;
+    const QString text = m_clipboard->text().trimmed();
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now < m_ignoreClipboardChangesUntil && text == m_ignoredClipboardContent)
         return;
-    }
 
     if (!m_autoSendEnabled)
         return;
 
-    const QString text = m_clipboard->text().trimmed();
     if (text.isEmpty() || text == m_lastPublishedContent)
         return;
 
     ClipboardEntry entry;
+    entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     entry.deviceId = m_deviceId;
     entry.deviceName = m_deviceName;
     entry.type = text.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive) || text.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive)
@@ -121,7 +124,8 @@ void TrayController::pasteFromNetwork()
         return;
     }
 
-    m_suppressNextClipboardChange = true;
+    m_ignoreClipboardChangesUntil = QDateTime::currentMSecsSinceEpoch() + ClipboardIgnoreWindowMs;
+    m_ignoredClipboardContent = latest->content;
     m_lastPublishedContent = latest->content;
     m_clipboard->setText(latest->content);
     m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Copied latest network entry to Windows clipboard."));
@@ -131,10 +135,11 @@ void TrayController::copyServerInfo()
 {
     const QStringList urls = localServerUrls(m_port);
     const QString urlText = urls.isEmpty()
-        ? QStringLiteral("http://<windows-lan-ip>:%1").arg(m_port)
+        ? QStringLiteral("http://127.0.0.1:%1").arg(m_port)
         : urls.join(QLatin1Char('\n'));
     const QString info = QStringLiteral("URL:\n%1\nAuthorization: Bearer %2").arg(urlText, m_token);
-    m_suppressNextClipboardChange = true;
+    m_ignoreClipboardChangesUntil = QDateTime::currentMSecsSinceEpoch() + ClipboardIgnoreWindowMs;
+    m_ignoredClipboardContent = info.trimmed();
     m_clipboard->setText(info);
     m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Server info copied to clipboard."));
 }
