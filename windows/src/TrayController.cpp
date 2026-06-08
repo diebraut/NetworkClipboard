@@ -14,6 +14,14 @@
 namespace {
 constexpr qint64 ClipboardIgnoreWindowMs = 1500;
 
+QString withWindowsLineEndings(QString text)
+{
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    text.replace(QLatin1Char('\n'), QStringLiteral("\r\n"));
+    return text;
+}
+
 QStringList localServerUrls(quint16 port)
 {
     QStringList urls;
@@ -91,10 +99,11 @@ void TrayController::applyNetworkEntryToClipboard(const ClipboardEntry &entry)
     if (entry.deviceId == m_deviceId || entry.content.isEmpty())
         return;
 
+    const QString content = withWindowsLineEndings(entry.content);
     m_ignoreClipboardChangesUntil = QDateTime::currentMSecsSinceEpoch() + ClipboardIgnoreWindowMs;
-    m_ignoredClipboardContent = entry.content;
-    m_lastPublishedContent = entry.content;
-    m_clipboard->setText(entry.content);
+    m_ignoredClipboardContent = content;
+    m_lastPublishedContent = content;
+    m_clipboard->setText(content);
     m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Copied incoming entry to Windows clipboard."));
 }
 
@@ -138,9 +147,10 @@ void TrayController::pasteFromNetwork()
     }
 
     m_ignoreClipboardChangesUntil = QDateTime::currentMSecsSinceEpoch() + ClipboardIgnoreWindowMs;
-    m_ignoredClipboardContent = latest->content;
-    m_lastPublishedContent = latest->content;
-    m_clipboard->setText(latest->content);
+    const QString content = withWindowsLineEndings(latest->content);
+    m_ignoredClipboardContent = content;
+    m_lastPublishedContent = content;
+    m_clipboard->setText(content);
     m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Copied latest network entry to Windows clipboard."));
 }
 

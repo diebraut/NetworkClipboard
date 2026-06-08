@@ -3,6 +3,15 @@
 #include <QClipboard>
 #include <QGuiApplication>
 
+namespace {
+QString withUnixLineEndings(QString text)
+{
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    return text;
+}
+}
+
 ClipboardBridge::ClipboardBridge(QObject *parent)
     : QObject(parent)
 {
@@ -16,5 +25,5 @@ QString ClipboardBridge::text() const
 
 void ClipboardBridge::setText(const QString &text)
 {
-    QGuiApplication::clipboard()->setText(text);
+    QGuiApplication::clipboard()->setText(withUnixLineEndings(text));
 }
