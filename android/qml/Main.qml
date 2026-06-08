@@ -22,11 +22,41 @@ ApplicationWindow {
         networkClipboard.token = token
     }
 
+    function refreshClipboardPreview() {
+        preview.text = localClipboard.text()
+    }
+
+    onActiveChanged: {
+        if (active)
+            refreshClipboardPreview()
+    }
+
+    Component.onCompleted: {
+        serverUrlField.text = networkClipboard.serverUrl
+        tokenField.text = networkClipboard.token
+        refreshClipboardPreview()
+    }
+
     Connections {
         target: networkClipboard
         function onLatestReceived(text) {
             localClipboard.setText(text)
             preview.text = text
+        }
+
+        function onServerUrlChanged() {
+            serverUrlField.text = networkClipboard.serverUrl
+        }
+
+        function onTokenChanged() {
+            tokenField.text = networkClipboard.token
+        }
+    }
+
+    Connections {
+        target: localClipboard
+        function onTextChanged() {
+            refreshClipboardPreview()
         }
     }
 
@@ -72,7 +102,7 @@ ApplicationWindow {
             Layout.fillWidth: true
             onClicked: {
                 applySettings()
-                networkClipboard.sendText(localClipboard.text(), Qt.platform.os === "ios" ? "iPhone" : "Android")
+                networkClipboard.sendText(preview.text, Qt.platform.os === "ios" ? "iPhone" : "Android")
             }
         }
 

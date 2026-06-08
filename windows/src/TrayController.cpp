@@ -72,6 +72,7 @@ TrayController::TrayController(ClipboardStore *store, const QString &deviceId, c
     m_tray.setIcon(QApplication::style()->standardIcon(QStyle::SP_DriveNetIcon));
 
     connect(m_clipboard, &QClipboard::dataChanged, this, &TrayController::onClipboardChanged);
+    connect(m_store, &ClipboardStore::latestChanged, this, &TrayController::applyNetworkEntryToClipboard);
 }
 
 void TrayController::show()
@@ -83,6 +84,18 @@ void TrayController::setServerInfo(quint16 port, const QString &token)
 {
     m_port = port;
     m_token = token;
+}
+
+void TrayController::applyNetworkEntryToClipboard(const ClipboardEntry &entry)
+{
+    if (entry.deviceId == m_deviceId || entry.content.isEmpty())
+        return;
+
+    m_ignoreClipboardChangesUntil = QDateTime::currentMSecsSinceEpoch() + ClipboardIgnoreWindowMs;
+    m_ignoredClipboardContent = entry.content;
+    m_lastPublishedContent = entry.content;
+    m_clipboard->setText(entry.content);
+    m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Copied incoming entry to Windows clipboard."));
 }
 
 void TrayController::onClipboardChanged()

@@ -21,6 +21,7 @@ public:
     void setServerInfo(quint16 port, const QString &token);
 
 private:
+    void applyNetworkEntryToClipboard(const ClipboardEntry &entry);
     void onClipboardChanged();
     void pasteFromNetwork();
     void copyServerInfo();

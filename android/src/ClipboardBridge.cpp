@@ -6,6 +6,7 @@
 ClipboardBridge::ClipboardBridge(QObject *parent)
     : QObject(parent)
 {
+    connect(QGuiApplication::clipboard(), &QClipboard::dataChanged, this, &ClipboardBridge::textChanged);
 }
 
 QString ClipboardBridge::text() const

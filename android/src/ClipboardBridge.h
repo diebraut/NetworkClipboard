@@ -12,4 +12,7 @@ public:
 
     Q_INVOKABLE QString text() const;
     Q_INVOKABLE void setText(const QString &text);
+
+signals:
+    void textChanged();
 };
