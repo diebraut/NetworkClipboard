@@ -12,6 +12,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QUuid>
+#include <QVariant>
 
 namespace {
 constexpr quint16 DiscoveryPort = 8788;
@@ -48,7 +49,33 @@ QSet<QString> localSubnetHosts()
         }
     }
 
+    const QStringList commonLanPrefixes{
+        QStringLiteral("192.168.68."),
+        QStringLiteral("192.168.178."),
+        QStringLiteral("192.168.1."),
+        QStringLiteral("192.168.0.")
+    };
+    for (const QString &prefix : commonLanPrefixes) {
+        for (int host = 1; host < 255; ++host)
+            hosts.insert(QStringLiteral("%1%2").arg(prefix).arg(host));
+    }
+
     return hosts;
+}
+
+QString replyErrorMessage(QNetworkReply *reply)
+{
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
+    const QString serverMessage = object.value(QStringLiteral("error")).toString();
+
+    if (!serverMessage.isEmpty() && statusCode > 0)
+        return QStringLiteral("%1: %2").arg(statusCode).arg(serverMessage);
+    if (!serverMessage.isEmpty())
+        return serverMessage;
+    if (statusCode > 0)
+        return QStringLiteral("%1: %2").arg(statusCode).arg(reply->errorString());
+    return QStringLiteral("%1: %2").arg(reply->errorString(), reply->url().toString());
 }
 }
 
@@ -107,7 +134,7 @@ void NetworkClipboardClient::sendText(const QString &text, const QString &device
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         setStatus(reply->error() == QNetworkReply::NoError
             ? QStringLiteral("Sent.")
-            : QStringLiteral("%1: %2").arg(reply->errorString(), reply->url().toString()));
+            : replyErrorMessage(reply));
         reply->deleteLater();
     });
 }
@@ -124,7 +151,7 @@ void NetworkClipboardClient::getLatest()
     QNetworkReply *reply = m_network.get(request(QStringLiteral("/api/clipboard/latest")));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         if (reply->error() != QNetworkReply::NoError) {
-            setStatus(QStringLiteral("%1: %2").arg(reply->errorString(), reply->url().toString()));
+            setStatus(replyErrorMessage(reply));
             reply->deleteLater();
             return;
         }
@@ -147,7 +174,7 @@ void NetworkClipboardClient::discoverServer()
     startHttpDiscovery();
 
     QTimer::singleShot(4000, this, [this]() {
-        if (m_status == QStringLiteral("Suche Clipboard-Server..."))
+        if (m_status.startsWith(QStringLiteral("Suche Clipboard-Server")))
             setStatus(QStringLiteral("Kein Clipboard-Server gefunden."));
     });
 }
@@ -210,7 +237,7 @@ void NetworkClipboardClient::probeDiscoveryUrl(const QUrl &url)
             }
         }
 
-        if (m_pendingDiscoveryUrls.isEmpty() && m_status == QStringLiteral("Suche Clipboard-Server..."))
+        if (m_pendingDiscoveryUrls.isEmpty() && m_status.startsWith(QStringLiteral("Suche Clipboard-Server")))
             setStatus(QStringLiteral("Kein Clipboard-Server gefunden."));
 
         reply->deleteLater();
@@ -222,6 +249,7 @@ void NetworkClipboardClient::startHttpDiscovery()
     m_pendingDiscoveryUrls.clear();
 
     const QSet<QString> hosts = localSubnetHosts();
+    setStatus(QStringLiteral("Suche Clipboard-Server (%1 Adressen)...").arg(hosts.size()));
     for (const QString &host : hosts) {
         probeDiscoveryUrl(QUrl(QStringLiteral("http://%1:%2/api/discovery").arg(host).arg(ApiPort)));
     }

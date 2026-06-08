@@ -85,13 +85,18 @@ ApplicationWindow {
             }
         }
 
-        TextArea {
-            id: preview
-            placeholderText: "Latest received text"
-            readOnly: true
-            wrapMode: TextEdit.Wrap
+        ScrollView {
             Layout.fillWidth: true
             Layout.fillHeight: true
+
+            TextArea {
+                id: preview
+                placeholderText: "Latest received text"
+                readOnly: true
+                wrapMode: TextEdit.Wrap
+                selectByMouse: true
+                textFormat: TextEdit.PlainText
+            }
         }
 
         Label {
