@@ -6,8 +6,11 @@
 #include <QClipboard>
 #include <QDateTime>
 #include <QHostAddress>
+#include <QJsonDocument>
 #include <QMenu>
 #include <QNetworkInterface>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QStyle>
 #include <QUuid>
 
@@ -54,13 +57,16 @@ QStringList localServerUrls(quint16 port)
 }
 }
 
-TrayController::TrayController(ClipboardStore *store, const QString &deviceId, const QString &deviceName, QObject *parent)
-    : QObject(parent), m_store(store), m_clipboard(QApplication::clipboard()), m_deviceId(deviceId), m_deviceName(deviceName)
+TrayController::TrayController(const QString &deviceId, const QString &deviceName, QObject *parent)
+    : QObject(parent), m_clipboard(QApplication::clipboard()), m_deviceId(deviceId), m_deviceName(deviceName)
 {
     m_menu = new QMenu();
 
     QAction *pasteAction = m_menu->addAction(QStringLiteral("Paste from Network"));
     connect(pasteAction, &QAction::triggered, this, &TrayController::pasteFromNetwork);
+
+    QAction *sendAction = m_menu->addAction(QStringLiteral("Send Clipboard Now"));
+    connect(sendAction, &QAction::triggered, this, &TrayController::sendCurrentClipboard);
 
     QAction *copyInfoAction = m_menu->addAction(QStringLiteral("Copy Server Info"));
     connect(copyInfoAction, &QAction::triggered, this, &TrayController::copyServerInfo);
@@ -80,7 +86,9 @@ TrayController::TrayController(ClipboardStore *store, const QString &deviceId, c
     m_tray.setIcon(QApplication::style()->standardIcon(QStyle::SP_DriveNetIcon));
 
     connect(m_clipboard, &QClipboard::dataChanged, this, &TrayController::onClipboardChanged);
-    connect(m_store, &ClipboardStore::latestChanged, this, &TrayController::applyNetworkEntryToClipboard);
+    connect(&m_pollTimer, &QTimer::timeout, this, &TrayController::pollLatestFromServer);
+    m_pollTimer.setInterval(2000);
+    m_pollTimer.start();
 }
 
 void TrayController::show()
@@ -88,23 +96,11 @@ void TrayController::show()
     m_tray.show();
 }
 
-void TrayController::setServerInfo(quint16 port, const QString &token)
+void TrayController::setServerInfo(const QUrl &serverUrl, quint16 port, const QString &token)
 {
+    m_serverUrl = serverUrl;
     m_port = port;
     m_token = token;
-}
-
-void TrayController::applyNetworkEntryToClipboard(const ClipboardEntry &entry)
-{
-    if (entry.deviceId == m_deviceId || entry.content.isEmpty())
-        return;
-
-    const QString content = withWindowsLineEndings(entry.content);
-    m_ignoreClipboardChangesUntil = QDateTime::currentMSecsSinceEpoch() + ClipboardIgnoreWindowMs;
-    m_ignoredClipboardContent = content;
-    m_lastPublishedContent = content;
-    m_clipboard->setText(content);
-    m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Copied incoming entry to Windows clipboard."));
 }
 
 void TrayController::onClipboardChanged()
@@ -120,6 +116,44 @@ void TrayController::onClipboardChanged()
     if (text.isEmpty() || text == m_lastPublishedContent)
         return;
 
+    publishClipboardText(text, false);
+}
+
+void TrayController::pollLatestFromServer()
+{
+    if (m_token.isEmpty() || !m_serverUrl.isValid())
+        return;
+
+    QNetworkReply *reply = m_network.get(apiRequest(QStringLiteral("/api/clipboard/latest")));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            reply->deleteLater();
+            return;
+        }
+
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &parseError);
+        if (parseError.error == QJsonParseError::NoError && document.isObject()) {
+            applyNetworkEntryToClipboard(ClipboardEntry::fromJson(document.object()), false, false);
+        }
+
+        reply->deleteLater();
+    });
+}
+
+void TrayController::sendCurrentClipboard()
+{
+    publishClipboardText(m_clipboard->text().trimmed(), true);
+}
+
+void TrayController::publishClipboardText(const QString &text, bool showSuccessMessage)
+{
+    if (text.isEmpty()) {
+        if (showSuccessMessage)
+            m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Windows clipboard is empty."));
+        return;
+    }
+
     ClipboardEntry entry;
     entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     entry.deviceId = m_deviceId;
@@ -131,27 +165,38 @@ void TrayController::onClipboardChanged()
     entry.timestamp = QDateTime::currentSecsSinceEpoch();
 
     QString error;
-    if (!entry.isValid(&error))
+    if (!entry.isValid(&error)) {
+        if (showSuccessMessage)
+            m_tray.showMessage(QStringLiteral("Network Clipboard"), error);
         return;
+    }
 
     m_lastPublishedContent = text;
-    m_store->setLatest(entry);
+    sendEntryToServer(entry, showSuccessMessage);
 }
 
 void TrayController::pasteFromNetwork()
 {
-    const auto latest = m_store->latest();
-    if (!latest) {
-        m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("No network clipboard entry available."));
-        return;
-    }
+    QNetworkReply *reply = m_network.get(apiRequest(QStringLiteral("/api/clipboard/latest")));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Could not fetch from server: %1").arg(reply->errorString()));
+            reply->deleteLater();
+            return;
+        }
 
-    m_ignoreClipboardChangesUntil = QDateTime::currentMSecsSinceEpoch() + ClipboardIgnoreWindowMs;
-    const QString content = withWindowsLineEndings(latest->content);
-    m_ignoredClipboardContent = content;
-    m_lastPublishedContent = content;
-    m_clipboard->setText(content);
-    m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Copied latest network entry to Windows clipboard."));
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+            m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Server returned invalid JSON."));
+            reply->deleteLater();
+            return;
+        }
+
+        const ClipboardEntry entry = ClipboardEntry::fromJson(document.object());
+        applyNetworkEntryToClipboard(entry, true, true);
+        reply->deleteLater();
+    });
 }
 
 void TrayController::copyServerInfo()
@@ -170,4 +215,57 @@ void TrayController::copyServerInfo()
 void TrayController::setAutoSendEnabled(bool enabled)
 {
     m_autoSendEnabled = enabled;
+}
+
+void TrayController::sendEntryToServer(const ClipboardEntry &entry, bool showSuccessMessage)
+{
+    QNetworkReply *reply = m_network.post(apiRequest(QStringLiteral("/api/clipboard")), QJsonDocument(entry.toJson()).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, showSuccessMessage]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Could not send to server: %1").arg(reply->errorString()));
+        } else if (showSuccessMessage) {
+            m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Sent Windows clipboard to server."));
+        }
+        reply->deleteLater();
+    });
+}
+
+void TrayController::applyNetworkEntryToClipboard(const ClipboardEntry &entry, bool showMessage, bool allowOwnEntry)
+{
+    if (entry.content.isEmpty()) {
+        if (showMessage)
+            m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("No network clipboard entry available."));
+        return;
+    }
+
+    if (!allowOwnEntry && entry.deviceId == m_deviceId)
+        return;
+
+    if (!allowOwnEntry && !entry.id.isEmpty() && entry.id == m_lastSeenNetworkEntryId)
+        return;
+
+    if (!allowOwnEntry && entry.id.isEmpty() && entry.content == m_lastSeenNetworkContent)
+        return;
+
+    const QString content = withWindowsLineEndings(entry.content);
+    m_lastSeenNetworkEntryId = entry.id;
+    m_lastSeenNetworkContent = entry.content;
+    m_ignoreClipboardChangesUntil = QDateTime::currentMSecsSinceEpoch() + ClipboardIgnoreWindowMs;
+    m_ignoredClipboardContent = content;
+    m_lastPublishedContent = content;
+    m_clipboard->setText(content);
+
+    if (showMessage)
+        m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Copied latest network entry to Windows clipboard."));
+}
+
+QNetworkRequest TrayController::apiRequest(const QString &path) const
+{
+    QUrl url = m_serverUrl;
+    url.setPath(path);
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setRawHeader("Authorization", QByteArray("Bearer ") + m_token.toUtf8());
+    return request;
 }

@@ -9,6 +9,12 @@ find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets Network)
 
 qt_standard_project_setup()
 
+set(APP_ICON_RESOURCE "")
+if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources/appicon.rc")
+    enable_language(RC)
+    set(APP_ICON_RESOURCE resources/appicon.rc)
+endif()
+
 qt_add_executable(NetworkClipboardWindows
     src/main.cpp
     src/ApiServer.cpp
@@ -19,7 +25,7 @@ qt_add_executable(NetworkClipboardWindows
     src/ClipboardStore.h
     src/TrayController.cpp
     src/TrayController.h
-    resources/appicon.rc
+    ${APP_ICON_RESOURCE}
 )
 
 target_link_libraries(NetworkClipboardWindows
@@ -28,4 +34,20 @@ target_link_libraries(NetworkClipboardWindows
 
 if(WIN32)
     set_target_properties(NetworkClipboardWindows PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
+
+if(WIN32)
+    qt_add_executable(NetworkClipboardService
+        src/service_main.cpp
+        src/ApiServer.cpp
+        src/ApiServer.h
+        src/ClipboardEntry.cpp
+        src/ClipboardEntry.h
+        src/ClipboardStore.cpp
+        src/ClipboardStore.h
+    )
+
+    target_link_libraries(NetworkClipboardService
+        PRIVATE Qt6::Core Qt6::Network
+    )
 endif()

@@ -1,11 +1,31 @@
-﻿#include "ApiServer.h"
 #include "TrayController.h"
 
 #include <QApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QHostInfo>
-#include <QMessageBox>
 #include <QSettings>
+#include <QStringList>
+#include <QUrl>
 #include <QUuid>
+
+namespace {
+QString serviceConfigPath()
+{
+    const QStringList candidates = {
+        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("NetworkClipboardService.ini")),
+        QStringLiteral("K:/Program Files/NetworkClipboard/NetworkClipboardService.ini"),
+        QDir(qEnvironmentVariable("ProgramFiles")).filePath(QStringLiteral("NetworkClipboard/NetworkClipboardService.ini"))
+    };
+
+    for (const QString &candidate : candidates) {
+        if (QFileInfo::exists(candidate))
+            return candidate;
+    }
+
+    return candidates.first();
+}
+}
 
 int main(int argc, char *argv[])
 {
@@ -15,12 +35,22 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationName(QStringLiteral("NetworkClipboard"));
 
     QSettings settings;
-    const quint16 port = settings.value(QStringLiteral("server/port"), 8787).toUInt();
-    QString token = settings.value(QStringLiteral("server/token")).toString();
+    QSettings serviceSettings(serviceConfigPath(), QSettings::IniFormat);
+    const bool hasServiceConfig = QFileInfo::exists(serviceConfigPath());
+
+    const quint16 port = hasServiceConfig
+        ? serviceSettings.value(QStringLiteral("server/port"), 8787).toUInt()
+        : settings.value(QStringLiteral("server/port"), 8787).toUInt();
+
+    QString token = hasServiceConfig
+        ? serviceSettings.value(QStringLiteral("server/token")).toString()
+        : settings.value(QStringLiteral("server/token")).toString();
     if (token.isEmpty()) {
         token = QUuid::createUuid().toString(QUuid::WithoutBraces);
         settings.setValue(QStringLiteral("server/token"), token);
     }
+
+    const QUrl serverUrl(settings.value(QStringLiteral("server/url"), QStringLiteral("http://127.0.0.1:%1").arg(port)).toString());
 
     QString deviceId = settings.value(QStringLiteral("device/id")).toString();
     if (deviceId.isEmpty()) {
@@ -29,16 +59,8 @@ int main(int argc, char *argv[])
     }
     const QString deviceName = settings.value(QStringLiteral("device/name"), QHostInfo::localHostName()).toString();
 
-    ClipboardStore store;
-    ApiServer server(&store);
-    QString error;
-    if (!server.start(port, token, &error)) {
-        QMessageBox::critical(nullptr, QStringLiteral("Network Clipboard"), QStringLiteral("Could not start server on port %1:\n%2").arg(port).arg(error));
-        return 1;
-    }
-
-    TrayController tray(&store, deviceId, deviceName);
-    tray.setServerInfo(server.port(), token);
+    TrayController tray(deviceId, deviceName);
+    tray.setServerInfo(serverUrl, port, token);
     tray.show();
 
     return app.exec();

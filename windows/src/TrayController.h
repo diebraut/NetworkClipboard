@@ -1,10 +1,13 @@
 ﻿#pragma once
 
-#include "ClipboardStore.h"
+#include "ClipboardEntry.h"
 
 #include <QDateTime>
+#include <QNetworkAccessManager>
 #include <QObject>
 #include <QSystemTrayIcon>
+#include <QTimer>
+#include <QUrl>
 
 class QAction;
 class QClipboard;
@@ -15,29 +18,38 @@ class TrayController : public QObject
     Q_OBJECT
 
 public:
-    TrayController(ClipboardStore *store, const QString &deviceId, const QString &deviceName, QObject *parent = nullptr);
+    TrayController(const QString &deviceId, const QString &deviceName, QObject *parent = nullptr);
 
     void show();
-    void setServerInfo(quint16 port, const QString &token);
+    void setServerInfo(const QUrl &serverUrl, quint16 port, const QString &token);
 
 private:
-    void applyNetworkEntryToClipboard(const ClipboardEntry &entry);
     void onClipboardChanged();
+    void pollLatestFromServer();
+    void sendCurrentClipboard();
     void pasteFromNetwork();
     void copyServerInfo();
     void setAutoSendEnabled(bool enabled);
+    void sendEntryToServer(const ClipboardEntry &entry, bool showSuccessMessage);
+    void publishClipboardText(const QString &text, bool showSuccessMessage);
+    void applyNetworkEntryToClipboard(const ClipboardEntry &entry, bool showMessage, bool allowOwnEntry);
+    QNetworkRequest apiRequest(const QString &path) const;
 
-    ClipboardStore *m_store = nullptr;
     QClipboard *m_clipboard = nullptr;
+    QNetworkAccessManager m_network;
+    QTimer m_pollTimer;
     QSystemTrayIcon m_tray;
     QMenu *m_menu = nullptr;
     QAction *m_autoSendAction = nullptr;
     QString m_deviceId;
     QString m_deviceName;
     QString m_token;
+    QUrl m_serverUrl;
     quint16 m_port = 8787;
     bool m_autoSendEnabled = true;
     qint64 m_ignoreClipboardChangesUntil = 0;
     QString m_ignoredClipboardContent;
+    QString m_lastSeenNetworkEntryId;
+    QString m_lastSeenNetworkContent;
     QString m_lastPublishedContent;
 };
