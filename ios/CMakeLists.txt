@@ -15,6 +15,11 @@ qt_add_executable(NetworkClipboardIOS
     src/NetworkClipboardClient.h
     src/ClipboardBridge.cpp
     src/ClipboardBridge.h
+    ../icons/ios/Assets.xcassets
+)
+
+set_source_files_properties(../icons/ios/Assets.xcassets
+    PROPERTIES MACOSX_PACKAGE_LOCATION Resources
 )
 
 set_source_files_properties(qml/Main.qml
@@ -35,6 +40,7 @@ if(IOS)
     set_target_properties(NetworkClipboardIOS PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_GUI_IDENTIFIER de.localtools.networkclipboard
+        XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
         XCODE_ATTRIBUTE_INFOPLIST_KEY_NSLocalNetworkUsageDescription "Network Clipboard sucht im lokalen Netzwerk nach dem Clipboard-Server."
     )
 endif()

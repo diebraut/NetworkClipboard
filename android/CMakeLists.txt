@@ -30,3 +30,10 @@ qt_add_qml_module(NetworkClipboardAndroid
 target_link_libraries(NetworkClipboardAndroid
     PRIVATE Qt6::Core Qt6::Gui Qt6::Quick Qt6::QuickControls2 Qt6::Network
 )
+
+if(ANDROID)
+    set_target_properties(NetworkClipboardAndroid PROPERTIES
+        QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
+        QT_ANDROID_APP_ICON "@mipmap/ic_launcher"
+    )
+endif()

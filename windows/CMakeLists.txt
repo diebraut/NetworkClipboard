@@ -19,6 +19,7 @@ qt_add_executable(NetworkClipboardWindows
     src/ClipboardStore.h
     src/TrayController.cpp
     src/TrayController.h
+    resources/appicon.rc
 )
 
 target_link_libraries(NetworkClipboardWindows
