@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QSet>
 #include <QString>
+#include <QTimer>
 #include <QUdpSocket>
 #include <QUrl>
 #include <QVariantList>
@@ -17,6 +18,7 @@ class NetworkClipboardClient : public QObject
     Q_PROPERTY(QString serverName READ serverName NOTIFY serverNameChanged)
     Q_PROPERTY(QVariantList servers READ servers NOTIFY serversChanged)
     Q_PROPERTY(int selectedServerIndex READ selectedServerIndex NOTIFY selectedServerIndexChanged)
+    Q_PROPERTY(bool serverActive READ serverActive NOTIFY serverActiveChanged)
     Q_PROPERTY(QString token READ token WRITE setToken NOTIFY tokenChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
 
@@ -29,6 +31,7 @@ public:
     QString serverName() const;
     QVariantList servers() const;
     int selectedServerIndex() const;
+    bool serverActive() const;
 
     QString token() const;
     void setToken(const QString &token);
@@ -45,6 +48,7 @@ signals:
     void serverNameChanged();
     void serversChanged();
     void selectedServerIndexChanged();
+    void serverActiveChanged();
     void tokenChanged();
     void statusChanged();
     void latestReceived(const QString &text);
@@ -60,14 +64,18 @@ private:
     void clearDiscoveredServers();
     void addDiscoveredServer(const QJsonObject &object);
     void resolveServerName(int index, const QString &host);
+    void checkSelectedServer();
+    void setServerActive(bool active);
     void updateServerName(const QString &serverName, const QString &serverUrl);
     void setStatus(const QString &status);
 
     QNetworkAccessManager m_network;
+    QTimer m_serverCheckTimer;
     QUdpSocket m_discoverySocket;
     QSet<QString> m_pendingDiscoveryUrls;
     QVariantList m_servers;
     int m_selectedServerIndex = -1;
+    bool m_serverActive = false;
     QString m_serverUrl;
     QString m_serverName;
     QString m_token;

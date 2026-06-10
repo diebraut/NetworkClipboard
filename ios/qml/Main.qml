@@ -65,11 +65,12 @@ ApplicationWindow {
         }
 
         Label {
-            visible: networkClipboard.servers.length === 1
-            text: networkClipboard.serverName
+            visible: networkClipboard.servers.length > 0
+            textFormat: Text.RichText
+            text: "Clipboard-Server: <span style=\"color:" + (networkClipboard.serverActive ? "#16a34a" : "#6b7280")
+                + "; font-weight:600;\">" + (networkClipboard.serverActive ? networkClipboard.serverName : "Kein Server aktiv") + "</span>"
             Layout.fillWidth: true
             font.pixelSize: 18
-            font.bold: true
         }
 
         ComboBox {
@@ -86,7 +87,7 @@ ApplicationWindow {
         Button {
             text: "Send Clipboard to Network"
             Layout.fillWidth: true
-            enabled: networkClipboard.selectedServerIndex >= 0
+            enabled: networkClipboard.serverActive
             onClicked: {
                 networkClipboard.sendText(preview.text, Qt.platform.os === "ios" ? "iPhone" : "Android")
             }
@@ -95,7 +96,7 @@ ApplicationWindow {
         Button {
             text: "Get from Network Clipboard"
             Layout.fillWidth: true
-            enabled: networkClipboard.selectedServerIndex >= 0
+            enabled: networkClipboard.serverActive
             onClicked: {
                 networkClipboard.getLatest()
             }
