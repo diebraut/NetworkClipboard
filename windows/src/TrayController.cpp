@@ -56,6 +56,39 @@ QStringList localServerUrls(quint16 port)
     urls.removeDuplicates();
     return urls;
 }
+
+bool runElevatedServiceCommand(const QString &command)
+{
+#ifdef Q_OS_WIN
+    const QStringList arguments{
+        QStringLiteral("-NoProfile"),
+        QStringLiteral("-WindowStyle"),
+        QStringLiteral("Hidden"),
+        QStringLiteral("-Command"),
+        QStringLiteral("Start-Process -FilePath sc.exe -ArgumentList '%1 NetworkClipboardServer' -Verb RunAs -WindowStyle Hidden").arg(command)
+    };
+
+    return QProcess::startDetached(QStringLiteral("powershell.exe"), arguments);
+#else
+    Q_UNUSED(command)
+    return false;
+#endif
+}
+
+bool isServiceRunning()
+{
+#ifdef Q_OS_WIN
+    QProcess process;
+    process.start(QStringLiteral("sc.exe"), {QStringLiteral("query"), QStringLiteral("NetworkClipboardServer")});
+    if (!process.waitForFinished(1500))
+        return false;
+
+    const QString output = QString::fromLocal8Bit(process.readAllStandardOutput());
+    return output.contains(QStringLiteral("RUNNING"), Qt::CaseInsensitive);
+#else
+    return false;
+#endif
+}
 }
 
 TrayController::TrayController(const QString &deviceId, const QString &deviceName, QObject *parent)
@@ -79,8 +112,8 @@ TrayController::TrayController(const QString &deviceId, const QString &deviceNam
     connect(m_autoSendAction, &QAction::toggled, this, &TrayController::setAutoSendEnabled);
 
     m_menu->addSeparator();
-    QAction *stopServiceAction = m_menu->addAction(QStringLiteral("Stop Server Service"));
-    connect(stopServiceAction, &QAction::triggered, this, &TrayController::stopServerService);
+    m_serviceAction = m_menu->addAction(QStringLiteral("Start Server Service"));
+    connect(m_serviceAction, &QAction::triggered, this, &TrayController::toggleServerService);
 
     QAction *quitAction = m_menu->addAction(QStringLiteral("Quit Tray Agent"));
     connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
@@ -91,8 +124,10 @@ TrayController::TrayController(const QString &deviceId, const QString &deviceNam
 
     connect(m_clipboard, &QClipboard::dataChanged, this, &TrayController::onClipboardChanged);
     connect(&m_pollTimer, &QTimer::timeout, this, &TrayController::pollLatestFromServer);
+    connect(&m_pollTimer, &QTimer::timeout, this, &TrayController::updateServiceStatus);
     m_pollTimer.setInterval(2000);
     m_pollTimer.start();
+    updateServiceStatus();
 }
 
 void TrayController::show()
@@ -216,25 +251,33 @@ void TrayController::copyServerInfo()
     m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Server info copied to clipboard."));
 }
 
-void TrayController::stopServerService()
+void TrayController::toggleServerService()
 {
-#ifdef Q_OS_WIN
-    const QStringList arguments{
-        QStringLiteral("-NoProfile"),
-        QStringLiteral("-WindowStyle"),
-        QStringLiteral("Hidden"),
-        QStringLiteral("-Command"),
-        QStringLiteral("Start-Process -FilePath sc.exe -ArgumentList 'stop NetworkClipboardServer' -Verb RunAs -WindowStyle Hidden")
-    };
-
-    if (!QProcess::startDetached(QStringLiteral("powershell.exe"), arguments)) {
-        m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Could not request service stop."));
+    const QString command = m_serviceRunning ? QStringLiteral("stop") : QStringLiteral("start");
+    if (!runElevatedServiceCommand(command)) {
+        m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Could not request service state change."));
         return;
     }
-    m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Requested Windows service stop."));
-#else
-    m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Service control is only available on Windows."));
-#endif
+    m_tray.showMessage(QStringLiteral("Network Clipboard"),
+                       m_serviceRunning
+                           ? QStringLiteral("Requested Windows service stop.")
+                           : QStringLiteral("Requested Windows service start."));
+    QTimer::singleShot(2500, this, &TrayController::updateServiceStatus);
+}
+
+void TrayController::updateServiceStatus()
+{
+    const bool running = isServiceRunning();
+    if (m_serviceRunning == running && m_serviceAction)
+        return;
+
+    m_serviceRunning = running;
+    if (!m_serviceAction)
+        return;
+
+    m_serviceAction->setText(m_serviceRunning
+                                 ? QStringLiteral("Stop Server Service")
+                                 : QStringLiteral("Start Server Service"));
 }
 
 void TrayController::setAutoSendEnabled(bool enabled)

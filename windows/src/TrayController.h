@@ -29,7 +29,8 @@ private:
     void sendCurrentClipboard();
     void pasteFromNetwork();
     void copyServerInfo();
-    void stopServerService();
+    void toggleServerService();
+    void updateServiceStatus();
     void setAutoSendEnabled(bool enabled);
     void sendEntryToServer(const ClipboardEntry &entry, bool showSuccessMessage);
     void publishClipboardText(const QString &text, bool showSuccessMessage);
@@ -42,12 +43,14 @@ private:
     QSystemTrayIcon m_tray;
     QMenu *m_menu = nullptr;
     QAction *m_autoSendAction = nullptr;
+    QAction *m_serviceAction = nullptr;
     QString m_deviceId;
     QString m_deviceName;
     QString m_token;
     QUrl m_serverUrl;
     quint16 m_port = 8787;
     bool m_autoSendEnabled = true;
+    bool m_serviceRunning = false;
     qint64 m_ignoreClipboardChangesUntil = 0;
     QString m_ignoredClipboardContent;
     QString m_lastSeenNetworkEntryId;
