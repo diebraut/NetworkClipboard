@@ -8,20 +8,6 @@ ApplicationWindow {
     visible: true
     title: "Network Clipboard"
 
-    function applySettings() {
-        const text = (serverUrlField.text + "\n" + tokenField.text).trim()
-        const urlMatch = text.match(/https?:\/\/[^\s]+/)
-        const tokenMatch = text.match(/Bearer\s+([^\s]+)/i)
-
-        const serverUrl = urlMatch ? urlMatch[0].replace(/\/+$/, "") : serverUrlField.text.trim().replace(/\/+$/, "")
-        const token = tokenMatch ? tokenMatch[1] : tokenField.text.trim().replace(/^Bearer\s+/i, "")
-
-        serverUrlField.text = serverUrl
-        tokenField.text = token
-        networkClipboard.serverUrl = serverUrl
-        networkClipboard.token = token
-    }
-
     function refreshClipboardPreview() {
         preview.text = localClipboard.text()
     }
@@ -32,9 +18,8 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
-        serverUrlField.text = networkClipboard.serverUrl
-        tokenField.text = networkClipboard.token
         refreshClipboardPreview()
+        networkClipboard.discoverServer()
     }
 
     Connections {
@@ -44,13 +29,6 @@ ApplicationWindow {
             preview.text = text
         }
 
-        function onServerUrlChanged() {
-            serverUrlField.text = networkClipboard.serverUrl
-        }
-
-        function onTokenChanged() {
-            tokenField.text = networkClipboard.token
-        }
     }
 
     Connections {
@@ -72,36 +50,44 @@ ApplicationWindow {
             Layout.fillWidth: true
         }
 
-        TextField {
-            id: serverUrlField
-            placeholderText: "Server URL, z.B. http://192.168.178.42:8787"
-            text: networkClipboard.serverUrl
+        Rectangle {
+            visible: networkClipboard.servers.length === 0
+            color: "#e5e7eb"
+            radius: 6
             Layout.fillWidth: true
-            onEditingFinished: networkClipboard.serverUrl = text
-            onAccepted: applySettings()
+            Layout.preferredHeight: 44
+
+            Label {
+                anchors.centerIn: parent
+                text: "Keine Cilpboard-Server gefunden°"
+                color: "#6b7280"
+            }
         }
 
-        TextField {
-            id: tokenField
-            placeholderText: "API token"
-            echoMode: TextInput.Password
-            text: networkClipboard.token
+        Label {
+            visible: networkClipboard.servers.length === 1
+            text: networkClipboard.serverName
             Layout.fillWidth: true
-            onEditingFinished: networkClipboard.token = text
-            onAccepted: applySettings()
+            font.pixelSize: 18
+            font.bold: true
         }
 
-        Button {
-            text: "Server suchen"
+        ComboBox {
+            visible: networkClipboard.servers.length > 1
+            model: networkClipboard.servers
+            textRole: "name"
+            currentIndex: networkClipboard.selectedServerIndex
             Layout.fillWidth: true
-            onClicked: networkClipboard.discoverServer()
+            onActivated: function(index) {
+                networkClipboard.selectServer(index)
+            }
         }
 
         Button {
             text: "Send Clipboard to Network"
             Layout.fillWidth: true
+            enabled: networkClipboard.selectedServerIndex >= 0
             onClicked: {
-                applySettings()
                 networkClipboard.sendText(preview.text, Qt.platform.os === "ios" ? "iPhone" : "Android")
             }
         }
@@ -109,8 +95,8 @@ ApplicationWindow {
         Button {
             text: "Get from Network Clipboard"
             Layout.fillWidth: true
+            enabled: networkClipboard.selectedServerIndex >= 0
             onClicked: {
-                applySettings()
                 networkClipboard.getLatest()
             }
         }
@@ -122,9 +108,11 @@ ApplicationWindow {
             TextArea {
                 id: preview
                 placeholderText: "Latest received text"
-                readOnly: true
+                readOnly: false
                 wrapMode: TextEdit.Wrap
                 selectByMouse: true
+                selectByKeyboard: true
+                persistentSelection: true
                 textFormat: TextEdit.PlainText
             }
         }

@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QNetworkDatagram>
 #include <QNetworkInterface>
+#include <QSysInfo>
 #include <QTcpSocket>
 
 namespace {
@@ -85,6 +86,16 @@ QByteArray reasonPhrase(int statusCode)
     default: return "Internal Server Error";
     }
 }
+
+QString serverName()
+{
+    const QString computerName = qEnvironmentVariable("COMPUTERNAME").trimmed();
+    if (!computerName.isEmpty())
+        return computerName;
+
+    const QString hostName = QSysInfo::machineHostName().trimmed();
+    return hostName.isEmpty() ? QStringLiteral("Network Clipboard Server") : hostName;
+}
 }
 
 ApiServer::ApiServer(ClipboardStore *store, QObject *parent)
@@ -147,6 +158,7 @@ void ApiServer::handleDiscoveryDatagram()
 
         const QJsonObject response{
             {QStringLiteral("service"), QStringLiteral("NetworkClipboard")},
+            {QStringLiteral("serverName"), serverName()},
             {QStringLiteral("url"), urls.value(0)},
             {QStringLiteral("urls"), urlArray},
             {QStringLiteral("token"), m_token}
@@ -187,6 +199,7 @@ void ApiServer::processRequest(QTcpSocket *socket, const HttpRequest &request)
 
         sendJson(socket, 200, {
             {QStringLiteral("service"), QStringLiteral("NetworkClipboard")},
+            {QStringLiteral("serverName"), serverName()},
             {QStringLiteral("url"), urls.value(0)},
             {QStringLiteral("urls"), urlArray},
             {QStringLiteral("token"), m_token}
