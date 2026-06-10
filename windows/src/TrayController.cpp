@@ -11,6 +11,7 @@
 #include <QNetworkInterface>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QProcess>
 #include <QStyle>
 #include <QUuid>
 
@@ -78,7 +79,10 @@ TrayController::TrayController(const QString &deviceId, const QString &deviceNam
     connect(m_autoSendAction, &QAction::toggled, this, &TrayController::setAutoSendEnabled);
 
     m_menu->addSeparator();
-    QAction *quitAction = m_menu->addAction(QStringLiteral("Quit"));
+    QAction *stopServiceAction = m_menu->addAction(QStringLiteral("Stop Server Service"));
+    connect(stopServiceAction, &QAction::triggered, this, &TrayController::stopServerService);
+
+    QAction *quitAction = m_menu->addAction(QStringLiteral("Quit Tray Agent"));
     connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
 
     m_tray.setContextMenu(m_menu);
@@ -210,6 +214,27 @@ void TrayController::copyServerInfo()
     m_ignoredClipboardContent = info.trimmed();
     m_clipboard->setText(info);
     m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Server info copied to clipboard."));
+}
+
+void TrayController::stopServerService()
+{
+#ifdef Q_OS_WIN
+    const QStringList arguments{
+        QStringLiteral("-NoProfile"),
+        QStringLiteral("-WindowStyle"),
+        QStringLiteral("Hidden"),
+        QStringLiteral("-Command"),
+        QStringLiteral("Start-Process -FilePath sc.exe -ArgumentList 'stop NetworkClipboardServer' -Verb RunAs -WindowStyle Hidden")
+    };
+
+    if (!QProcess::startDetached(QStringLiteral("powershell.exe"), arguments)) {
+        m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Could not request service stop."));
+        return;
+    }
+    m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Requested Windows service stop."));
+#else
+    m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Service control is only available on Windows."));
+#endif
 }
 
 void TrayController::setAutoSendEnabled(bool enabled)

@@ -29,6 +29,7 @@ private:
     void sendCurrentClipboard();
     void pasteFromNetwork();
     void copyServerInfo();
+    void stopServerService();
     void setAutoSendEnabled(bool enabled);
     void sendEntryToServer(const ClipboardEntry &entry, bool showSuccessMessage);
     void publishClipboardText(const QString &text, bool showSuccessMessage);
