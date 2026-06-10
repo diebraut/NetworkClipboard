@@ -59,7 +59,7 @@ ApplicationWindow {
 
             Label {
                 anchors.centerIn: parent
-                text: "Keine Cilpboard-Server gefunden°"
+                text: "Keine Clipboard-Server gefunden."
                 color: "#6b7280"
             }
         }

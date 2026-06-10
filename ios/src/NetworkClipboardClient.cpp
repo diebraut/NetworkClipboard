@@ -217,7 +217,10 @@ void NetworkClipboardClient::selectServer(int index)
         emit selectedServerIndexChanged();
     }
 
-    setServerUrl(url);
+    if (m_serverUrl != url) {
+        m_serverUrl = url;
+        emit serverUrlChanged();
+    }
     updateServerName(name, url);
     if (!serverToken.isEmpty())
         setToken(serverToken);
@@ -387,9 +390,33 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object)
     const QString name = displayNameForServer(discoveredName, url);
 
     for (int i = 0; i < m_servers.size(); ++i) {
-        const QVariantMap existing = m_servers.at(i).toMap();
-        if (existing.value(QStringLiteral("url")).toString() == url)
+        QVariantMap existing = m_servers.at(i).toMap();
+        if (existing.value(QStringLiteral("url")).toString() == url) {
+            const QString existingName = existing.value(QStringLiteral("name")).toString();
+            const QString existingToken = existing.value(QStringLiteral("token")).toString();
+            bool changed = false;
+
+            if (existingName != name && !discoveredName.trimmed().isEmpty()) {
+                existing.insert(QStringLiteral("name"), name);
+                changed = true;
+            }
+            const QString token = object.value(QStringLiteral("token")).toString();
+            if (existingToken.isEmpty() && !token.isEmpty()) {
+                existing.insert(QStringLiteral("token"), token);
+                changed = true;
+            }
+
+            if (changed) {
+                m_servers[i] = existing;
+                emit serversChanged();
+                if (m_selectedServerIndex == i) {
+                    updateServerName(existing.value(QStringLiteral("name")).toString(), url);
+                    if (!existing.value(QStringLiteral("token")).toString().isEmpty())
+                        setToken(existing.value(QStringLiteral("token")).toString());
+                }
+            }
             return;
+        }
     }
 
     QVariantMap server{
