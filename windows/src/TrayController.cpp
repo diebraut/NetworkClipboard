@@ -140,6 +140,7 @@ void TrayController::setServerInfo(const QUrl &serverUrl, quint16 port, const QS
     m_serverUrl = serverUrl;
     m_port = port;
     m_token = token;
+    scheduleCurrentClipboardPublish(false);
 }
 
 void TrayController::onClipboardChanged()
@@ -185,13 +186,16 @@ void TrayController::sendCurrentClipboard()
     publishClipboardText(m_clipboard->text().trimmed(), true);
 }
 
-void TrayController::publishClipboardText(const QString &text, bool showSuccessMessage)
+void TrayController::publishClipboardText(const QString &text, bool showSuccessMessage, bool force)
 {
     if (text.isEmpty()) {
         if (showSuccessMessage)
             m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Windows clipboard is empty."));
         return;
     }
+
+    if (!force && text == m_lastPublishedContent)
+        return;
 
     ClipboardEntry entry;
     entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -210,8 +214,28 @@ void TrayController::publishClipboardText(const QString &text, bool showSuccessM
         return;
     }
 
-    m_lastPublishedContent = text;
     sendEntryToServer(entry, showSuccessMessage);
+}
+
+void TrayController::publishCurrentClipboardIfAvailable(bool force)
+{
+    if (!m_autoSendEnabled || !m_serviceRunning || m_token.isEmpty() || !m_serverUrl.isValid())
+        return;
+
+    publishClipboardText(m_clipboard->text().trimmed(), false, force);
+}
+
+void TrayController::scheduleCurrentClipboardPublish(bool force)
+{
+    QTimer::singleShot(500, this, [this, force]() {
+        publishCurrentClipboardIfAvailable(force);
+    });
+    QTimer::singleShot(2000, this, [this, force]() {
+        publishCurrentClipboardIfAvailable(force);
+    });
+    QTimer::singleShot(5000, this, [this, force]() {
+        publishCurrentClipboardIfAvailable(force);
+    });
 }
 
 void TrayController::pasteFromNetwork()
@@ -268,6 +292,7 @@ void TrayController::toggleServerService()
 void TrayController::updateServiceStatus()
 {
     const bool running = isServiceRunning();
+    const bool serviceStarted = !m_serviceRunning && running;
     if (m_serviceRunning == running && m_serviceAction)
         return;
 
@@ -278,6 +303,9 @@ void TrayController::updateServiceStatus()
     m_serviceAction->setText(m_serviceRunning
                                  ? QStringLiteral("Stop Server Service")
                                  : QStringLiteral("Start Server Service"));
+
+    if (serviceStarted)
+        scheduleCurrentClipboardPublish(true);
 }
 
 void TrayController::setAutoSendEnabled(bool enabled)
@@ -288,11 +316,13 @@ void TrayController::setAutoSendEnabled(bool enabled)
 void TrayController::sendEntryToServer(const ClipboardEntry &entry, bool showSuccessMessage)
 {
     QNetworkReply *reply = m_network.post(apiRequest(QStringLiteral("/api/clipboard")), QJsonDocument(entry.toJson()).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, showSuccessMessage]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, entry, showSuccessMessage]() {
         if (reply->error() != QNetworkReply::NoError) {
             m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Could not send to server: %1").arg(reply->errorString()));
-        } else if (showSuccessMessage) {
-            m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Sent Windows clipboard to server."));
+        } else {
+            m_lastPublishedContent = entry.content;
+            if (showSuccessMessage)
+                m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Sent Windows clipboard to server."));
         }
         reply->deleteLater();
     });

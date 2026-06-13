@@ -40,7 +40,7 @@ if(IOS)
     set_target_properties(NetworkClipboardIOS PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_GUI_IDENTIFIER de.localtools.networkclipboard
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in"
         XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
-        XCODE_ATTRIBUTE_INFOPLIST_KEY_NSLocalNetworkUsageDescription "Network Clipboard sucht im lokalen Netzwerk nach dem Clipboard-Server."
     )
 endif()

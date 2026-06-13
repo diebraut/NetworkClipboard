@@ -1,6 +1,7 @@
 ﻿#include "ClipboardBridge.h"
 #include "NetworkClipboardClient.h"
 
+#include <QCoreApplication>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -10,6 +11,8 @@
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
+    QCoreApplication::setOrganizationName(QStringLiteral("LocalTools"));
+    QCoreApplication::setApplicationName(QStringLiteral("NetworkClipboard"));
     QQuickStyle::setStyle(QStringLiteral("Material"));
 
     NetworkClipboardClient client;

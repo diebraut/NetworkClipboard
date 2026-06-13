@@ -33,7 +33,9 @@ private:
     void updateServiceStatus();
     void setAutoSendEnabled(bool enabled);
     void sendEntryToServer(const ClipboardEntry &entry, bool showSuccessMessage);
-    void publishClipboardText(const QString &text, bool showSuccessMessage);
+    void publishClipboardText(const QString &text, bool showSuccessMessage, bool force = false);
+    void publishCurrentClipboardIfAvailable(bool force);
+    void scheduleCurrentClipboardPublish(bool force);
     void applyNetworkEntryToClipboard(const ClipboardEntry &entry, bool showMessage, bool allowOwnEntry);
     QNetworkRequest apiRequest(const QString &path) const;
 

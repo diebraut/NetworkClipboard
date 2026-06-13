@@ -31,7 +31,9 @@ Filename: "{sys}\sc.exe"; Parameters: "delete {#MyServiceName}"; Flags: runhidde
 Filename: "{sys}\sc.exe"; Parameters: "create {#MyServiceName} binPath= ""{app}\{#MyAppExeName}"" start= auto DisplayName= ""{#MyAppName}"""; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "description {#MyServiceName} ""Local LAN clipboard HTTP server on port 8787."""; Flags: runhidden waituntilterminated
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Network Clipboard Server"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Network Clipboard Discovery"""; Flags: runhidden waituntilterminated
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Network Clipboard Server"" dir=in action=allow protocol=TCP localport=8787"; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Network Clipboard Discovery"" dir=in action=allow protocol=UDP localport=8788"; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated
 Filename: "{app}\{#MyTrayExeName}"; Description: "Start Network Clipboard tray agent"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
@@ -39,6 +41,7 @@ Filename: "{app}\{#MyTrayExeName}"; Description: "Start Network Clipboard tray a
 Filename: "{sys}\sc.exe"; Parameters: "stop {#MyServiceName}"; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "delete {#MyServiceName}"; Flags: runhidden waituntilterminated
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Network Clipboard Server"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Network Clipboard Discovery"""; Flags: runhidden waituntilterminated
 
 [Icons]
 Name: "{group}\Service configuration"; Filename: "{app}\NetworkClipboardService.ini"

@@ -12,6 +12,13 @@ ApplicationWindow {
         preview.text = localClipboard.text()
     }
 
+    function serverDisplayText(name, active) {
+        const label = active && name.length > 0 ? name : "Kein Server aktiv"
+        return "<span style=\"color:" + (active ? "#16a34a" : "#6b7280")
+            + "; font-weight:600; text-decoration:" + (active ? "none" : "line-through")
+            + ";\">" + label + "</span>"
+    }
+
     onActiveChanged: {
         if (active)
             refreshClipboardPreview()
@@ -50,37 +57,66 @@ ApplicationWindow {
             Layout.fillWidth: true
         }
 
-        Rectangle {
-            visible: networkClipboard.servers.length === 0
-            color: "#e5e7eb"
-            radius: 6
-            Layout.fillWidth: true
-            Layout.preferredHeight: 44
-
-            Label {
-                anchors.centerIn: parent
-                text: "Keine Clipboard-Server gefunden."
-                color: "#6b7280"
-            }
-        }
-
         Label {
-            visible: networkClipboard.servers.length > 0
-            textFormat: Text.RichText
-            text: "Clipboard-Server: <span style=\"color:" + (networkClipboard.serverActive ? "#16a34a" : "#6b7280")
-                + "; font-weight:600;\">" + (networkClipboard.serverActive ? networkClipboard.serverName : "Kein Server aktiv") + "</span>"
+            text: "Clipboard-Server"
             Layout.fillWidth: true
-            font.pixelSize: 18
+            font.pixelSize: 13
+            color: "#6b7280"
         }
 
-        ComboBox {
-            visible: networkClipboard.servers.length > 1
-            model: networkClipboard.servers
-            textRole: "name"
-            currentIndex: networkClipboard.selectedServerIndex
+        RowLayout {
             Layout.fillWidth: true
-            onActivated: function(index) {
-                networkClipboard.selectServer(index)
+            spacing: 8
+            ComboBox {
+                id: serverBox
+                Layout.fillWidth: true
+                model: networkClipboard.servers
+                textRole: "name"
+                currentIndex: networkClipboard.selectedServerIndex
+                enabled: networkClipboard.servers.length > 0
+                editable: false
+                onActivated: function(index) {
+                    networkClipboard.selectServer(index)
+                }
+
+                contentItem: Item {
+                    implicitHeight: serverText.implicitHeight
+
+                    Text {
+                        id: serverText
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    leftPadding: 12
+                    rightPadding: serverBox.indicator.width + serverBox.spacing + 8
+                    width: parent.width
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                    textFormat: Text.RichText
+                        text: serverDisplayText(networkClipboard.serverName, networkClipboard.serverActive)
+                    }
+                }
+
+                delegate: ItemDelegate {
+                    width: serverBox.width
+                    highlighted: serverBox.highlightedIndex === index
+                    contentItem: Text {
+                        textFormat: Text.RichText
+                        text: serverDisplayText(modelData.name, index === networkClipboard.selectedServerIndex && networkClipboard.serverActive)
+                        elide: Text.ElideRight
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                    onClicked: {
+                        serverBox.currentIndex = index
+                        networkClipboard.selectServer(index)
+                        serverBox.popup.close()
+                    }
+                }
+            }
+
+            Button {
+                text: "Aktualisieren"
+                onClicked: networkClipboard.discoverServer()
             }
         }
 

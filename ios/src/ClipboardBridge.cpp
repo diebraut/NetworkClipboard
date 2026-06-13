@@ -1,9 +1,10 @@
 ﻿#include "ClipboardBridge.h"
 
 #include <QClipboard>
+#include <QDesktopServices>
 #include <QGuiApplication>
-#include <QMimeData>
-#include <QTextDocument>
+#include <QSettings>
+#include <QUrl>
 
 namespace {
 QString withUnixLineEndings(QString text)
@@ -13,22 +14,7 @@ QString withUnixLineEndings(QString text)
     return text;
 }
 
-QString clipboardPlainText()
-{
-    const QMimeData *mimeData = QGuiApplication::clipboard()->mimeData();
-    if (!mimeData)
-        return {};
-
-    if (mimeData->hasHtml()) {
-        QTextDocument document;
-        document.setHtml(mimeData->html());
-        const QString text = document.toPlainText();
-        if (!text.trimmed().isEmpty())
-            return text;
-    }
-
-    return mimeData->text();
-}
+constexpr auto PasteSettingsOfferSeenKey = "pasteSettingsOfferSeen";
 }
 
 ClipboardBridge::ClipboardBridge(QObject *parent)
@@ -37,12 +23,33 @@ ClipboardBridge::ClipboardBridge(QObject *parent)
     connect(QGuiApplication::clipboard(), &QClipboard::dataChanged, this, &ClipboardBridge::textChanged);
 }
 
+bool ClipboardBridge::shouldOfferPasteSettings() const
+{
+    QSettings settings;
+    return !settings.value(QLatin1String(PasteSettingsOfferSeenKey), false).toBool();
+}
+
 QString ClipboardBridge::text() const
 {
-    return withUnixLineEndings(clipboardPlainText());
+    return withUnixLineEndings(QGuiApplication::clipboard()->text());
 }
 
 void ClipboardBridge::setText(const QString &text)
 {
     QGuiApplication::clipboard()->setText(withUnixLineEndings(text));
+}
+
+void ClipboardBridge::markPasteSettingsOfferSeen()
+{
+    if (!shouldOfferPasteSettings())
+        return;
+
+    QSettings settings;
+    settings.setValue(QLatin1String(PasteSettingsOfferSeenKey), true);
+    emit pasteSettingsOfferChanged();
+}
+
+void ClipboardBridge::openAppSettings() const
+{
+    QDesktopServices::openUrl(QUrl(QStringLiteral("app-settings:")));
 }

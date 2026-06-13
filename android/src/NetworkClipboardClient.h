@@ -61,10 +61,12 @@ private:
     void handleDiscoveryResponse();
     void probeDiscoveryUrl(const QUrl &url);
     void startHttpDiscovery();
-    void clearDiscoveredServers();
+    void clearDiscoveredServers(bool keepSelectedServer);
     void addDiscoveredServer(const QJsonObject &object);
     void resolveServerName(int index, const QString &host);
     void checkSelectedServer();
+    void loadSavedServer();
+    void saveSelectedServer();
     void setServerActive(bool active);
     void updateServerName(const QString &serverName, const QString &serverUrl);
     void setStatus(const QString &status);
@@ -75,6 +77,8 @@ private:
     QSet<QString> m_pendingDiscoveryUrls;
     QVariantList m_servers;
     int m_selectedServerIndex = -1;
+    int m_missedServerChecks = 0;
+    bool m_serverCheckInFlight = false;
     bool m_serverActive = false;
     QString m_serverUrl;
     QString m_serverName;
