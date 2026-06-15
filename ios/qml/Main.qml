@@ -10,6 +10,7 @@ ApplicationWindow {
     title: "Network Clipboard"
 
     property string lastAutoSentText: ""
+    property string observedLocalClipboardText: ""
     property string rawPreviewText: ""
     property bool forceNextNetworkText: false
     property bool waitingForServerText: false
@@ -26,6 +27,10 @@ ApplicationWindow {
         if (text.trim().length === 0)
             return
 
+        if (text === observedLocalClipboardText)
+            return
+
+        observedLocalClipboardText = text
         rawPreviewText = text
 
         if (networkClipboard.serverActive && text !== lastAutoSentText) {

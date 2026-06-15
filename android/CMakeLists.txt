@@ -24,6 +24,7 @@ set_source_files_properties(qml/Main.qml
 qt_add_qml_module(NetworkClipboardAndroid
     URI NetworkClipboardAndroid
     VERSION 1.0
+    IMPORT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/qml-stubs"
     QML_FILES qml/Main.qml
 )
 

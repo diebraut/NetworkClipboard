@@ -10,6 +10,7 @@ ApplicationWindow {
     title: "Network Clipboard"
 
     property string lastAutoSentText: ""
+    property string observedLocalClipboardText: ""
     property string pendingAutoSendText: ""
     property string rawPreviewText: ""
     property bool autoSendInFlight: false
@@ -24,6 +25,11 @@ ApplicationWindow {
         const text = localClipboard.text()
         if (text.trim().length === 0)
             return
+
+        if (text === observedLocalClipboardText)
+            return
+
+        observedLocalClipboardText = text
 
         if (rawPreviewText !== text)
             rawPreviewText = text
