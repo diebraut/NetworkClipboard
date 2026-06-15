@@ -19,7 +19,7 @@
         android:allowBackup="true"
         android:fullBackupOnly="false"
         android:hardwareAccelerated="true"
-        android:icon="@drawable/ic_launcher"
+        android:icon="@mipmap/ic_launcher"
         android:label="NetworkClipboardAndroid"
         android:usesCleartextTraffic="true">
 
