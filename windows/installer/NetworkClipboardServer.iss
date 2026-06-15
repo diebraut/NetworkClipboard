@@ -35,7 +35,7 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Network Clipboard Server"" dir=in action=allow protocol=TCP localport=8787"; Flags: runhidden waituntilterminated
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Network Clipboard Discovery"" dir=in action=allow protocol=UDP localport=8788"; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated
-Filename: "{app}\{#MyTrayExeName}"; Description: "Start Network Clipboard tray agent"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{app}\{#MyTrayExeName}"; StatusMsg: "Starting Network Clipboard tray agent..."; Flags: nowait runasoriginaluser skipifdoesntexist
 
 [UninstallRun]
 Filename: "{sys}\sc.exe"; Parameters: "stop {#MyServiceName}"; Flags: runhidden waituntilterminated

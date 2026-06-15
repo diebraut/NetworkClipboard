@@ -34,6 +34,6 @@ target_link_libraries(NetworkClipboardAndroid
 if(ANDROID)
     set_target_properties(NetworkClipboardAndroid PROPERTIES
         QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
-        QT_ANDROID_APP_ICON "@mipmap/ic_launcher"
+        QT_ANDROID_APP_ICON "@drawable/ic_launcher"
     )
 endif()

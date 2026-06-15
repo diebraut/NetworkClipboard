@@ -10,6 +10,7 @@ ApplicationWindow {
     title: "Network Clipboard"
 
     property string lastAutoSentText: ""
+    property string rawPreviewText: ""
     property bool forceNextNetworkText: false
     property bool waitingForServerText: false
 
@@ -25,7 +26,7 @@ ApplicationWindow {
         if (text.trim().length === 0)
             return
 
-        preview.text = text
+        rawPreviewText = text
 
         if (networkClipboard.serverActive && text !== lastAutoSentText) {
             lastAutoSentText = text
@@ -57,6 +58,40 @@ ApplicationWindow {
         return "<span style=\"color:" + (active ? "#16a34a" : "#6b7280")
             + "; font-weight:600; text-decoration:" + (active ? "none" : "line-through")
             + ";\">" + label + "</span>"
+    }
+
+    function escapeHtml(text) {
+        return text.replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+    }
+
+    function linkHref(link) {
+        if (link.toLowerCase().startsWith("www."))
+            return "https://" + link
+        return link
+    }
+
+    function richClipboardText(text) {
+        const linkPattern = /(?:https?:\/\/|www\.)[^\s<>"']+/ig
+        let result = ""
+        let lastIndex = 0
+        let match = null
+
+        while ((match = linkPattern.exec(text)) !== null) {
+            const rawLink = match[0]
+            const link = rawLink.replace(/[.,;:!?)]*$/, "")
+            const trailing = rawLink.slice(link.length)
+
+            result += escapeHtml(text.slice(lastIndex, match.index))
+            result += "<a href=\"" + escapeHtml(linkHref(link)) + "\">" + escapeHtml(link) + "</a>"
+            result += escapeHtml(trailing)
+            lastIndex = match.index + rawLink.length
+        }
+
+        result += escapeHtml(text.slice(lastIndex))
+        return result.replace(/\n/g, "<br>")
     }
 
     onActiveChanged: {
@@ -105,12 +140,12 @@ ApplicationWindow {
             waitingForServerText = false
             serverReadGuardTimer.stop()
 
-            if (!forceUpdate && preview.text === text)
+            if (!forceUpdate && rawPreviewText === text)
                 return
 
             lastAutoSentText = text
             localClipboard.setText(text)
-            preview.text = text
+            rawPreviewText = text
         }
 
         function onServerActiveChanged() {
@@ -172,15 +207,15 @@ ApplicationWindow {
 
                     Text {
                         id: serverText
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    leftPadding: 12
-                    rightPadding: serverBox.indicator.width + serverBox.spacing + 8
-                    width: parent.width
-                    verticalAlignment: Text.AlignVCenter
-                    elide: Text.ElideRight
-                    textFormat: Text.RichText
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        leftPadding: 12
+                        rightPadding: serverBox.indicator.width + serverBox.spacing + 8
+                        width: parent.width
+                        verticalAlignment: Text.AlignVCenter
+                        elide: Text.ElideRight
+                        textFormat: Text.RichText
                         text: serverDisplayText(networkClipboard.serverName, networkClipboard.serverActive)
                     }
                 }
@@ -234,12 +269,14 @@ ApplicationWindow {
 
                     TextArea {
                         id: preview
-                        readOnly: false
+                        readOnly: true
                         wrapMode: TextEdit.Wrap
                         selectByMouse: true
                         selectByKeyboard: true
                         persistentSelection: true
-                        textFormat: TextEdit.PlainText
+                        textFormat: TextEdit.RichText
+                        text: richClipboardText(rawPreviewText)
+                        onLinkActivated: function(link) { Qt.openUrlExternally(link) }
                         background: Rectangle {
                             color: "transparent"
                             border.width: 0

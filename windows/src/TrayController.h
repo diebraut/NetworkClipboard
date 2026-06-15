@@ -26,6 +26,7 @@ public:
 private:
     void onClipboardChanged();
     void pollLatestFromServer();
+    void sendAgentHeartbeat();
     void sendCurrentClipboard();
     void pasteFromNetwork();
     void copyServerInfo();

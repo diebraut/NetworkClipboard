@@ -53,12 +53,16 @@ signals:
     void tokenChanged();
     void statusChanged();
     void latestReceived(const QString &text);
+    void textSent(const QString &text);
+    void textSendFailed(const QString &text);
 
 private:
     QString normalizedServerUrl(QString *errorMessage = nullptr) const;
     QNetworkRequest request(const QString &path) const;
     QNetworkRequest discoveryRequest(const QString &serverUrl) const;
-    void withAvailableServer(const QString &actionStatus, const std::function<void(const QString &serverUrl)> &action);
+    void withAvailableServer(const QString &actionStatus,
+                             const std::function<void(const QString &serverUrl)> &action,
+                             const std::function<void()> &failureAction = {});
     void handleDiscoveryResponse();
     void startInitialServerDiscovery();
     void probeDiscoveryUrl(const QUrl &url);

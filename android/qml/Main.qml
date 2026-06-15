@@ -10,6 +10,9 @@ ApplicationWindow {
     title: "Network Clipboard"
 
     property string lastAutoSentText: ""
+    property string pendingAutoSendText: ""
+    property string rawPreviewText: ""
+    property bool autoSendInFlight: false
     property bool forceNextNetworkText: false
     property bool waitingForServerText: false
 
@@ -18,17 +21,19 @@ ApplicationWindow {
     }
 
     function syncClipboardToPreview() {
-        if (networkClipboard.serverActive && waitingForServerText)
-            return
-
         const text = localClipboard.text()
         if (text.trim().length === 0)
             return
 
-        preview.text = text
+        if (rawPreviewText !== text)
+            rawPreviewText = text
 
-        if (networkClipboard.serverActive && text !== lastAutoSentText) {
-            lastAutoSentText = text
+        if (networkClipboard.serverActive
+                && !waitingForServerText
+                && !autoSendInFlight
+                && text !== lastAutoSentText) {
+            pendingAutoSendText = text
+            autoSendInFlight = true
             networkClipboard.sendText(text, deviceName())
         }
     }
@@ -59,16 +64,47 @@ ApplicationWindow {
             + ";\">" + label + "</span>"
     }
 
+    function escapeHtml(text) {
+        return text.replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+    }
+
+    function linkHref(link) {
+        if (link.toLowerCase().startsWith("www."))
+            return "https://" + link
+        return link
+    }
+
+    function richClipboardText(text) {
+        const linkPattern = /(?:https?:\/\/|www\.)[^\s<>"']+/ig
+        let result = ""
+        let lastIndex = 0
+        let match = null
+
+        while ((match = linkPattern.exec(text)) !== null) {
+            const rawLink = match[0]
+            const link = rawLink.replace(/[.,;:!?)]*$/, "")
+            const trailing = rawLink.slice(link.length)
+
+            result += escapeHtml(text.slice(lastIndex, match.index))
+            result += "<a href=\"" + escapeHtml(linkHref(link)) + "\">" + escapeHtml(link) + "</a>"
+            result += escapeHtml(trailing)
+            lastIndex = match.index + rawLink.length
+        }
+
+        result += escapeHtml(text.slice(lastIndex))
+        return result.replace(/\n/g, "<br>")
+    }
+
     onActiveChanged: {
         if (active)
             scheduleClipboardSync()
     }
 
     Component.onCompleted: {
-        if (networkClipboard.serverActive)
-            refreshNetworkClipboard(true)
-        else
-            scheduleClipboardSync()
+        scheduleClipboardSync()
     }
 
     Timer {
@@ -79,10 +115,21 @@ ApplicationWindow {
     }
 
     Timer {
+        id: localClipboardPollTimer
+        interval: 500
+        repeat: true
+        running: Qt.application.state === Qt.ApplicationActive
+        onTriggered: syncClipboardToPreview()
+    }
+
+    Timer {
         id: serverReadGuardTimer
         interval: 1500
         repeat: false
-        onTriggered: waitingForServerText = false
+        onTriggered: {
+            waitingForServerText = false
+            scheduleClipboardSync()
+        }
     }
 
     Connections {
@@ -103,22 +150,41 @@ ApplicationWindow {
             waitingForServerText = false
             serverReadGuardTimer.stop()
 
-            if (!forceUpdate && preview.text === text)
+            if (!forceUpdate && rawPreviewText === text)
                 return
 
             lastAutoSentText = text
+            pendingAutoSendText = ""
+            autoSendInFlight = false
             localClipboard.setText(text)
-            preview.text = text
+            rawPreviewText = text
+        }
+
+        function onTextSent(text) {
+            lastAutoSentText = text
+            if (pendingAutoSendText === text)
+                pendingAutoSendText = ""
+            autoSendInFlight = false
+        }
+
+        function onTextSendFailed(text) {
+            if (pendingAutoSendText === text)
+                pendingAutoSendText = ""
+            autoSendInFlight = false
         }
 
         function onServerActiveChanged() {
             if (networkClipboard.serverActive) {
-                lastAutoSentText = localClipboard.text()
-                refreshNetworkClipboard(true)
+                waitingForServerText = false
+                forceNextNetworkText = false
+                autoSendInFlight = false
+                scheduleClipboardSync()
             } else {
                 lastAutoSentText = ""
                 forceNextNetworkText = false
                 waitingForServerText = false
+                pendingAutoSendText = ""
+                autoSendInFlight = false
             }
         }
     }
@@ -174,9 +240,8 @@ ApplicationWindow {
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
-                        leftPadding: 12
-                        rightPadding: serverBox.indicator.width + serverBox.spacing + 8
-                        width: parent.width
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: serverBox.indicator.width + serverBox.spacing + 8
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
                         textFormat: Text.RichText
@@ -232,12 +297,14 @@ ApplicationWindow {
 
                     TextArea {
                         id: preview
-                        readOnly: false
+                        readOnly: true
                         wrapMode: TextEdit.Wrap
                         selectByMouse: true
                         selectByKeyboard: true
                         persistentSelection: true
-                        textFormat: TextEdit.PlainText
+                        textFormat: TextEdit.RichText
+                        text: richClipboardText(rawPreviewText)
+                        onLinkActivated: function(link) { Qt.openUrlExternally(link) }
                         background: Rectangle {
                             color: "transparent"
                             border.width: 0

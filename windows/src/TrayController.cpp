@@ -124,6 +124,7 @@ TrayController::TrayController(const QString &deviceId, const QString &deviceNam
 
     connect(m_clipboard, &QClipboard::dataChanged, this, &TrayController::onClipboardChanged);
     connect(&m_pollTimer, &QTimer::timeout, this, &TrayController::pollLatestFromServer);
+    connect(&m_pollTimer, &QTimer::timeout, this, &TrayController::sendAgentHeartbeat);
     connect(&m_pollTimer, &QTimer::timeout, this, &TrayController::updateServiceStatus);
     m_pollTimer.setInterval(2000);
     m_pollTimer.start();
@@ -179,6 +180,15 @@ void TrayController::pollLatestFromServer()
 
         reply->deleteLater();
     });
+}
+
+void TrayController::sendAgentHeartbeat()
+{
+    if (m_token.isEmpty() || !m_serverUrl.isValid())
+        return;
+
+    QNetworkReply *reply = m_network.post(apiRequest(QStringLiteral("/api/agent/heartbeat")), QByteArray("{}"));
+    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
 }
 
 void TrayController::sendCurrentClipboard()

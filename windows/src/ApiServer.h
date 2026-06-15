@@ -3,7 +3,9 @@
 #include "ClipboardStore.h"
 
 #include <QHash>
+#include <QJsonObject>
 #include <QObject>
+#include <QStringList>
 #include <QTcpServer>
 #include <QUdpSocket>
 
@@ -37,9 +39,12 @@ private:
     void sendJson(QTcpSocket *socket, int statusCode, const QJsonObject &body) const;
     void sendBytes(QTcpSocket *socket, int statusCode, const QByteArray &contentType, const QByteArray &body) const;
     void sendError(QTcpSocket *socket, int statusCode, const QString &message) const;
+    QJsonObject discoveryResponse(const QStringList &urls) const;
+    bool isAgentActive() const;
 
     ClipboardStore *m_store = nullptr;
     QTcpServer m_server;
     QUdpSocket m_discoverySocket;
     QString m_token;
+    qint64 m_lastAgentHeartbeat = 0;
 };

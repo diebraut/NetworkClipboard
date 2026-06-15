@@ -1,5 +1,6 @@
 ﻿#include "ApiServer.h"
 
+#include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -11,6 +12,7 @@
 namespace {
 constexpr quint16 DiscoveryPort = 8788;
 constexpr auto DiscoveryRequest = "NETWORK_CLIPBOARD_DISCOVER_V1";
+constexpr qint64 AgentHeartbeatTimeoutMs = 6000;
 
 QStringList localServerUrls(quint16 port)
 {
@@ -152,18 +154,7 @@ void ApiServer::handleDiscoveryDatagram()
             urls.prepend(matchedUrl);
         }
 
-        QJsonArray urlArray;
-        for (const QString &url : urls)
-            urlArray.append(url);
-
-        const QJsonObject response{
-            {QStringLiteral("service"), QStringLiteral("NetworkClipboard")},
-            {QStringLiteral("serverName"), serverName()},
-            {QStringLiteral("url"), urls.value(0)},
-            {QStringLiteral("urls"), urlArray},
-            {QStringLiteral("token"), m_token}
-        };
-        m_discoverySocket.writeDatagram(QJsonDocument(response).toJson(QJsonDocument::Compact),
+        m_discoverySocket.writeDatagram(QJsonDocument(discoveryResponse(urls)).toJson(QJsonDocument::Compact),
                                         datagram.senderAddress(),
                                         datagram.senderPort());
     }
@@ -193,17 +184,7 @@ void ApiServer::processRequest(QTcpSocket *socket, const HttpRequest &request)
             urls.prepend(connectedUrl);
         }
 
-        QJsonArray urlArray;
-        for (const QString &url : urls)
-            urlArray.append(url);
-
-        sendJson(socket, 200, {
-            {QStringLiteral("service"), QStringLiteral("NetworkClipboard")},
-            {QStringLiteral("serverName"), serverName()},
-            {QStringLiteral("url"), urls.value(0)},
-            {QStringLiteral("urls"), urlArray},
-            {QStringLiteral("token"), m_token}
-        });
+        sendJson(socket, 200, discoveryResponse(urls));
         return;
     }
 
@@ -237,6 +218,12 @@ void ApiServer::processRequest(QTcpSocket *socket, const HttpRequest &request)
         return;
     }
 
+    if (request.method == QStringLiteral("POST") && request.path == QStringLiteral("/api/agent/heartbeat")) {
+        m_lastAgentHeartbeat = QDateTime::currentMSecsSinceEpoch();
+        sendJson(socket, 200, {{QStringLiteral("ok"), true}});
+        return;
+    }
+
     if (request.method == QStringLiteral("GET") && request.path == QStringLiteral("/api/clipboard/latest")) {
         const auto latest = m_store->latest();
         if (!latest) {
@@ -262,6 +249,28 @@ void ApiServer::processRequest(QTcpSocket *socket, const HttpRequest &request)
     }
 
     sendError(socket, 404, QStringLiteral("Unknown endpoint."));
+}
+
+QJsonObject ApiServer::discoveryResponse(const QStringList &urls) const
+{
+    QJsonArray urlArray;
+    for (const QString &url : urls)
+        urlArray.append(url);
+
+    return {
+        {QStringLiteral("service"), QStringLiteral("NetworkClipboard")},
+        {QStringLiteral("serverName"), serverName()},
+        {QStringLiteral("url"), urls.value(0)},
+        {QStringLiteral("urls"), urlArray},
+        {QStringLiteral("token"), m_token},
+        {QStringLiteral("agentActive"), isAgentActive()}
+    };
+}
+
+bool ApiServer::isAgentActive() const
+{
+    return m_lastAgentHeartbeat > 0
+        && QDateTime::currentMSecsSinceEpoch() - m_lastAgentHeartbeat <= AgentHeartbeatTimeoutMs;
 }
 
 bool ApiServer::parseRequest(const QByteArray &raw, HttpRequest *request, QString *errorMessage) const
