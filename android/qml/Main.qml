@@ -3,13 +3,53 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 ApplicationWindow {
+    id: root
     width: 420
     height: 680
     visible: true
     title: "Network Clipboard"
 
-    function refreshClipboardPreview() {
-        preview.text = localClipboard.text()
+    property string lastAutoSentText: ""
+    property bool forceNextNetworkText: false
+    property bool waitingForServerText: false
+
+    function deviceName() {
+        return Qt.platform.os === "ios" ? "iPhone" : "Android"
+    }
+
+    function syncClipboardToPreview() {
+        if (networkClipboard.serverActive && waitingForServerText)
+            return
+
+        const text = localClipboard.text()
+        if (text.trim().length === 0)
+            return
+
+        preview.text = text
+
+        if (networkClipboard.serverActive && text !== lastAutoSentText) {
+            lastAutoSentText = text
+            networkClipboard.sendText(text, deviceName())
+        }
+    }
+
+    function scheduleClipboardSync() {
+        clipboardSyncTimer.restart()
+    }
+
+    function appInForeground() {
+        return Qt.application.state === Qt.ApplicationActive
+    }
+
+    function refreshNetworkClipboard(force) {
+        if (appInForeground() && networkClipboard.serverActive) {
+            if (force) {
+                forceNextNetworkText = true
+                waitingForServerText = true
+                serverReadGuardTimer.restart()
+            }
+            networkClipboard.pollLatest()
+        }
     }
 
     function serverDisplayText(name, active) {
@@ -21,28 +61,74 @@ ApplicationWindow {
 
     onActiveChanged: {
         if (active)
-            refreshClipboardPreview()
+            scheduleClipboardSync()
     }
 
     Component.onCompleted: {
-        refreshClipboardPreview()
-        networkClipboard.discoverServer()
+        if (networkClipboard.serverActive)
+            refreshNetworkClipboard(true)
+        else
+            scheduleClipboardSync()
+    }
+
+    Timer {
+        id: clipboardSyncTimer
+        interval: 250
+        repeat: false
+        onTriggered: syncClipboardToPreview()
+    }
+
+    Timer {
+        id: serverReadGuardTimer
+        interval: 1500
+        repeat: false
+        onTriggered: waitingForServerText = false
+    }
+
+    Connections {
+        target: Qt.application
+        function onStateChanged() {
+            if (appInForeground()) {
+                scheduleClipboardSync()
+                refreshNetworkClipboard(false)
+            }
+        }
     }
 
     Connections {
         target: networkClipboard
         function onLatestReceived(text) {
+            const forceUpdate = forceNextNetworkText
+            forceNextNetworkText = false
+            waitingForServerText = false
+            serverReadGuardTimer.stop()
+
+            if (!forceUpdate && preview.text === text)
+                return
+
+            lastAutoSentText = text
             localClipboard.setText(text)
             preview.text = text
         }
 
+        function onServerActiveChanged() {
+            if (networkClipboard.serverActive) {
+                lastAutoSentText = localClipboard.text()
+                refreshNetworkClipboard(true)
+            } else {
+                lastAutoSentText = ""
+                forceNextNetworkText = false
+                waitingForServerText = false
+            }
+        }
     }
 
-    Connections {
-        target: localClipboard
-        function onTextChanged() {
-            refreshClipboardPreview()
-        }
+    Timer {
+        id: networkPollTimer
+        interval: 1000
+        repeat: true
+        running: Qt.application.state === Qt.ApplicationActive && networkClipboard.serverActive
+        onTriggered: refreshNetworkClipboard(false)
     }
 
     ColumnLayout {
@@ -67,6 +153,7 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
+
             ComboBox {
                 id: serverBox
                 Layout.fillWidth: true
@@ -84,15 +171,15 @@ ApplicationWindow {
 
                     Text {
                         id: serverText
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    leftPadding: 12
-                    rightPadding: serverBox.indicator.width + serverBox.spacing + 8
-                    width: parent.width
-                    verticalAlignment: Text.AlignVCenter
-                    elide: Text.ElideRight
-                    textFormat: Text.RichText
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        leftPadding: 12
+                        rightPadding: serverBox.indicator.width + serverBox.spacing + 8
+                        width: parent.width
+                        verticalAlignment: Text.AlignVCenter
+                        elide: Text.ElideRight
+                        textFormat: Text.RichText
                         text: serverDisplayText(networkClipboard.serverName, networkClipboard.serverActive)
                     }
                 }
@@ -113,44 +200,70 @@ ApplicationWindow {
                     }
                 }
             }
-
-            Button {
-                text: "Aktualisieren"
-                onClicked: networkClipboard.discoverServer()
-            }
         }
 
-        Button {
-            text: "Send Clipboard to Network"
-            Layout.fillWidth: true
-            enabled: networkClipboard.serverActive
-            onClicked: {
-                networkClipboard.sendText(preview.text, Qt.platform.os === "ios" ? "iPhone" : "Android")
-            }
-        }
-
-        Button {
-            text: "Get from Network Clipboard"
-            Layout.fillWidth: true
-            enabled: networkClipboard.serverActive
-            onClicked: {
-                networkClipboard.getLatest()
-            }
-        }
-
-        ScrollView {
+        Item {
+            id: clipboardFieldset
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            TextArea {
-                id: preview
-                placeholderText: "Latest received text"
-                readOnly: false
-                wrapMode: TextEdit.Wrap
-                selectByMouse: true
-                selectByKeyboard: true
-                persistentSelection: true
-                textFormat: TextEdit.PlainText
+            property string fieldsetTitle: networkClipboard.serverActive
+                ? "Inhalt Netz-Zwischenablage"
+                : "Letzte bekannte Netz-Zwischenablage"
+
+            Rectangle {
+                id: clipboardBox
+                anchors.fill: parent
+                anchors.topMargin: Math.round(clipboardFieldsetTitle.implicitHeight / 2)
+                color: "transparent"
+                border.color: "#9ca3af"
+                border.width: 1
+                radius: 2
+
+                ScrollView {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    anchors.topMargin: 12
+                    anchors.bottomMargin: 8
+
+                    TextArea {
+                        id: preview
+                        readOnly: false
+                        wrapMode: TextEdit.Wrap
+                        selectByMouse: true
+                        selectByKeyboard: true
+                        persistentSelection: true
+                        textFormat: TextEdit.PlainText
+                        background: Rectangle {
+                            color: "transparent"
+                            border.width: 0
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                id: clipboardFieldsetTitleBackground
+                anchors.left: parent.left
+                anchors.leftMargin: 12
+                anchors.verticalCenter: clipboardBox.top
+                width: clipboardFieldsetTitle.implicitWidth + 10
+                height: clipboardFieldsetTitle.implicitHeight
+                color: root.color
+
+                Label {
+                    id: clipboardFieldsetTitle
+                    anchors.centerIn: parent
+                    width: parent.width - 10
+                    text: clipboardFieldset.fieldsetTitle
+                    font.pixelSize: 13
+                    color: "#111827"
+                    elide: Text.ElideRight
+                }
             }
         }
 

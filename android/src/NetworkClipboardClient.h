@@ -40,6 +40,7 @@ public:
 
     Q_INVOKABLE void sendText(const QString &text, const QString &deviceName);
     Q_INVOKABLE void getLatest();
+    Q_INVOKABLE void pollLatest();
     Q_INVOKABLE void discoverServer();
     Q_INVOKABLE void selectServer(int index);
 
@@ -59,6 +60,7 @@ private:
     QNetworkRequest discoveryRequest(const QString &serverUrl) const;
     void withAvailableServer(const QString &actionStatus, const std::function<void(const QString &serverUrl)> &action);
     void handleDiscoveryResponse();
+    void startInitialServerDiscovery();
     void probeDiscoveryUrl(const QUrl &url);
     void startHttpDiscovery();
     void clearDiscoveredServers(bool keepSelectedServer);
@@ -79,6 +81,7 @@ private:
     int m_selectedServerIndex = -1;
     int m_missedServerChecks = 0;
     bool m_serverCheckInFlight = false;
+    bool m_latestRequestInFlight = false;
     bool m_serverActive = false;
     QString m_serverUrl;
     QString m_serverName;

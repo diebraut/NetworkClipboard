@@ -106,7 +106,7 @@ NetworkClipboardClient::NetworkClipboardClient(QObject *parent)
     m_serverCheckTimer.setInterval(2000);
     connect(&m_serverCheckTimer, &QTimer::timeout, this, &NetworkClipboardClient::checkSelectedServer);
     m_serverCheckTimer.start();
-    checkSelectedServer();
+    QTimer::singleShot(0, this, &NetworkClipboardClient::startInitialServerDiscovery);
 }
 
 QString NetworkClipboardClient::serverUrl() const { return m_serverUrl; }
@@ -188,6 +188,35 @@ void NetworkClipboardClient::getLatest()
             setStatus(QStringLiteral("Received."));
             reply->deleteLater();
         });
+    });
+}
+
+void NetworkClipboardClient::pollLatest()
+{
+    if (m_latestRequestInFlight || !m_serverActive)
+        return;
+
+    const QString serverUrl = normalizedServerUrl();
+    if (serverUrl.isEmpty() || m_token.trimmed().isEmpty())
+        return;
+
+    m_latestRequestInFlight = true;
+
+    QNetworkReply *reply = m_network.get(request(QStringLiteral("/api/clipboard/latest")));
+    QTimer::singleShot(2500, reply, [reply]() {
+        if (reply->isRunning())
+            reply->abort();
+    });
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        m_latestRequestInFlight = false;
+
+        if (reply->error() == QNetworkReply::NoError) {
+            const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
+            emit latestReceived(object.value(QStringLiteral("content")).toString());
+        }
+
+        reply->deleteLater();
     });
 }
 
@@ -337,6 +366,20 @@ void NetworkClipboardClient::handleDiscoveryResponse()
     }
 }
 
+void NetworkClipboardClient::startInitialServerDiscovery()
+{
+    if (m_serverUrl.isEmpty()) {
+        discoverServer();
+    } else {
+        checkSelectedServer();
+    }
+
+    QTimer::singleShot(3000, this, [this]() {
+        if (!m_serverActive)
+            discoverServer();
+    });
+}
+
 void NetworkClipboardClient::probeDiscoveryUrl(const QUrl &url)
 {
     const QString urlString = url.toString();
@@ -438,6 +481,9 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object)
         if (existing.value(QStringLiteral("url")).toString() == url) {
             const QString existingName = existing.value(QStringLiteral("name")).toString();
             const QString existingToken = existing.value(QStringLiteral("token")).toString();
+            const bool shouldSelectServer = m_selectedServerIndex == -1
+                || m_selectedServerIndex == i
+                || (!m_serverUrl.isEmpty() && m_serverUrl == url);
             bool changed = false;
 
             if (existingName != name && !discoveredName.trimmed().isEmpty()) {
@@ -459,6 +505,22 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object)
                         setToken(existing.value(QStringLiteral("token")).toString());
                 }
             }
+            if (shouldSelectServer) {
+                if (m_selectedServerIndex != i) {
+                    m_selectedServerIndex = i;
+                    emit selectedServerIndexChanged();
+                }
+                if (m_serverUrl != url) {
+                    m_serverUrl = url;
+                    emit serverUrlChanged();
+                }
+                updateServerName(existing.value(QStringLiteral("name")).toString(), url);
+                if (m_token.trimmed().isEmpty() && !existing.value(QStringLiteral("token")).toString().isEmpty())
+                    setToken(existing.value(QStringLiteral("token")).toString());
+                setServerActive(true);
+                saveSelectedServer();
+                setStatus(QStringLiteral("Server aktiv: %1").arg(m_serverName));
+            }
             return;
         }
     }
@@ -475,7 +537,28 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object)
     if (discoveredName.trimmed().isEmpty())
         resolveServerName(newServerIndex, QUrl(url).host());
 
-    setStatus(QStringLiteral("Server gefunden: %1").arg(name));
+    const bool shouldSelectServer = m_selectedServerIndex == -1
+        || (!m_serverUrl.isEmpty() && m_serverUrl == url);
+    if (shouldSelectServer) {
+        m_selectedServerIndex = newServerIndex;
+        emit selectedServerIndexChanged();
+
+        if (m_serverUrl != url) {
+            m_serverUrl = url;
+            emit serverUrlChanged();
+        }
+        updateServerName(name, url);
+
+        const QString discoveredToken = object.value(QStringLiteral("token")).toString();
+        if (m_token.trimmed().isEmpty() && !discoveredToken.isEmpty())
+            setToken(discoveredToken);
+
+        setServerActive(true);
+        saveSelectedServer();
+        setStatus(QStringLiteral("Server aktiv: %1").arg(m_serverName));
+    } else {
+        setStatus(QStringLiteral("Server gefunden: %1").arg(name));
+    }
 }
 
 void NetworkClipboardClient::resolveServerName(int index, const QString &host)
@@ -537,7 +620,6 @@ void NetworkClipboardClient::checkSelectedServer()
         if (active) {
             const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
             const bool validServer = object.value(QStringLiteral("service")).toString() == QStringLiteral("NetworkClipboard");
-            setServerActive(validServer);
             if (validServer) {
                 m_missedServerChecks = 0;
                 addDiscoveredServer(object);
@@ -545,9 +627,11 @@ void NetworkClipboardClient::checkSelectedServer()
                 const QString discoveredToken = object.value(QStringLiteral("token")).toString();
                 if (m_token.trimmed().isEmpty() && !discoveredToken.isEmpty())
                     setToken(discoveredToken);
+                setServerActive(true);
                 saveSelectedServer();
             } else {
                 ++m_missedServerChecks;
+                setServerActive(false);
             }
         } else {
             ++m_missedServerChecks;
