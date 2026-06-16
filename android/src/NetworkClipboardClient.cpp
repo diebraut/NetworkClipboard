@@ -18,9 +18,11 @@
 #include <QVariant>
 #include <QVariantMap>
 
+#include <array>
+
 namespace {
 constexpr quint16 DiscoveryPort = 8788;
-constexpr quint16 ApiPort = 8787;
+constexpr std::array<quint16, 2> DiscoveryApiPorts{8787, 8789};
 constexpr auto DiscoveryRequest = "NETWORK_CLIPBOARD_DISCOVER_V1";
 
 QSet<QString> localSubnetHosts()
@@ -412,6 +414,7 @@ void NetworkClipboardClient::startInitialServerDiscovery()
         discoverServer();
     } else {
         checkSelectedServer();
+        QTimer::singleShot(1000, this, &NetworkClipboardClient::discoverServer);
     }
 
     QTimer::singleShot(3000, this, [this]() {
@@ -462,7 +465,8 @@ void NetworkClipboardClient::startHttpDiscovery()
     const QSet<QString> hosts = localSubnetHosts();
     setStatus(QStringLiteral("Suche Clipboard-Server (%1 Adressen)...").arg(hosts.size()));
     for (const QString &host : hosts) {
-        probeDiscoveryUrl(QUrl(QStringLiteral("http://%1:%2/api/discovery").arg(host).arg(ApiPort)));
+        for (const quint16 port : DiscoveryApiPorts)
+            probeDiscoveryUrl(QUrl(QStringLiteral("http://%1:%2/api/discovery").arg(host).arg(port)));
     }
 }
 
