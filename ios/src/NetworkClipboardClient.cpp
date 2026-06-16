@@ -278,6 +278,63 @@ void NetworkClipboardClient::discoverServer()
     });
 }
 
+void NetworkClipboardClient::connectToServerUrl(const QString &serverUrl)
+{
+    QString value = serverUrl.trimmed();
+    if (value.isEmpty()) {
+        setStatus(QStringLiteral("Server URL fehlt."));
+        return;
+    }
+
+    if (!value.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive)
+        && !value.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive)) {
+        value.prepend(QStringLiteral("http://"));
+    }
+
+    while (value.endsWith(QLatin1Char('/')))
+        value.chop(1);
+
+    const QUrl url(value);
+    if (!url.isValid() || url.scheme().isEmpty() || url.host().isEmpty()
+        || (url.scheme() != QStringLiteral("http") && url.scheme() != QStringLiteral("https"))) {
+        setStatus(QStringLiteral("Ungültige Server URL."));
+        return;
+    }
+
+    const QString name = displayNameForServer({}, value);
+    int index = -1;
+    for (int i = 0; i < m_servers.size(); ++i) {
+        if (m_servers.at(i).toMap().value(QStringLiteral("url")).toString() == value) {
+            index = i;
+            break;
+        }
+    }
+
+    if (index < 0) {
+        m_servers.append(QVariantMap{
+            {QStringLiteral("name"), name},
+            {QStringLiteral("url"), value},
+            {QStringLiteral("token"), m_token}
+        });
+        index = m_servers.size() - 1;
+        emit serversChanged();
+    }
+
+    m_selectedServerIndex = index;
+    emit selectedServerIndexChanged();
+
+    if (m_serverUrl != value) {
+        m_serverUrl = value;
+        emit serverUrlChanged();
+    }
+
+    setServerActive(false);
+    updateServerName(name, value);
+    saveSelectedServer();
+    setStatus(QStringLiteral("Prüfe Server: %1").arg(value));
+    checkSelectedServer();
+}
+
 bool NetworkClipboardClient::sendDiscoveryDatagrams()
 {
     bool wroteDatagram = m_discoverySocket.writeDatagram(DiscoveryRequest, QHostAddress::Broadcast, DiscoveryPort) >= 0;

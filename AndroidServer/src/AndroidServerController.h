@@ -17,6 +17,7 @@ class AndroidServerController : public QObject
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QString token READ token NOTIFY tokenChanged)
     Q_PROPERTY(QString serverInfo READ serverInfo NOTIFY serverInfoChanged)
+    Q_PROPERTY(QString serverUrlsText READ serverUrlsText NOTIFY serverInfoChanged)
     Q_PROPERTY(QString latestContent READ latestContent NOTIFY latestContentChanged)
     Q_PROPERTY(bool autoPublish READ autoPublish WRITE setAutoPublish NOTIFY autoPublishChanged)
 
@@ -26,6 +27,7 @@ public:
     QString status() const;
     QString token() const;
     QString serverInfo() const;
+    QString serverUrlsText() const;
     QString latestContent() const;
     bool autoPublish() const;
     void setAutoPublish(bool enabled);
@@ -51,6 +53,7 @@ private:
     QString deviceName() const;
     QString deviceId();
     QString currentServerInfo() const;
+    QStringList currentServerUrls() const;
 
     ClipboardStore m_store;
     ApiServer m_server;

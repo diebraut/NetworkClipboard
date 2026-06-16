@@ -32,13 +32,27 @@ ApplicationWindow {
             title: "Server Info"
             Layout.fillWidth: true
 
-            TextArea {
-                text: androidServer.serverInfo
-                readOnly: true
-                wrapMode: TextEdit.Wrap
-                selectByMouse: true
-                Layout.fillWidth: true
-                background: Rectangle { color: "transparent"; border.width: 0 }
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 8
+
+                TextArea {
+                    text: androidServer.serverInfo
+                    readOnly: true
+                    wrapMode: TextEdit.Wrap
+                    selectByMouse: true
+                    Layout.fillWidth: true
+                    background: Rectangle { color: "transparent"; border.width: 0 }
+                }
+
+                Label {
+                    visible: androidServer.serverUrlsText.length > 0
+                    text: "Test auf dem iPhone: erste URL mit /api/discovery in Safari öffnen."
+                    color: "#6b7280"
+                    font.pixelSize: 12
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                }
             }
         }
 

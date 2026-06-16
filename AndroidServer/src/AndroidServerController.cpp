@@ -50,6 +50,7 @@ AndroidServerController::AndroidServerController(QObject *parent)
 QString AndroidServerController::status() const { return m_status; }
 QString AndroidServerController::token() const { return m_token; }
 QString AndroidServerController::serverInfo() const { return currentServerInfo(); }
+QString AndroidServerController::serverUrlsText() const { return currentServerUrls().join(QLatin1Char('\n')); }
 QString AndroidServerController::latestContent() const { return m_latestContent; }
 bool AndroidServerController::autoPublish() const { return m_autoPublish; }
 
@@ -82,8 +83,11 @@ void AndroidServerController::start()
     }
 
     m_started = true;
-    setStatus(QStringLiteral("Server aktiv auf Port %1").arg(m_server.port()));
     emit serverInfoChanged();
+    const QStringList urls = currentServerUrls();
+    setStatus(urls.isEmpty()
+                  ? QStringLiteral("Server aktiv auf Port %1, aber keine LAN-IP gefunden. Android und iPhone muessen im selben WLAN sein.").arg(m_server.port())
+                  : QStringLiteral("Server aktiv: %1").arg(urls.join(QStringLiteral(", "))));
 }
 
 void AndroidServerController::acquireMulticastLock()
@@ -197,9 +201,14 @@ QString AndroidServerController::deviceId()
 
 QString AndroidServerController::currentServerInfo() const
 {
-    const QStringList urls = m_server.serverUrls();
+    const QStringList urls = currentServerUrls();
     const QString urlText = urls.isEmpty()
         ? QStringLiteral("http://<android-lan-ip>:%1").arg(ApiPort)
         : urls.join(QLatin1Char('\n'));
     return QStringLiteral("URL:\n%1\nAuthorization: Bearer %2").arg(urlText, m_token);
+}
+
+QStringList AndroidServerController::currentServerUrls() const
+{
+    return m_server.serverUrls();
 }

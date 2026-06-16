@@ -242,6 +242,30 @@ ApplicationWindow {
                 }
             }
 
+            Button {
+                text: "Suchen"
+                onClicked: networkClipboard.discoverServer()
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+
+            TextField {
+                id: serverUrlField
+                Layout.fillWidth: true
+                text: networkClipboard.serverUrl
+                placeholderText: "http://192.168.68.51:8787"
+                inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
+                onAccepted: networkClipboard.connectToServerUrl(text)
+            }
+
+            Button {
+                text: "Verbinden"
+                enabled: serverUrlField.text.trim().length > 0
+                onClicked: networkClipboard.connectToServerUrl(serverUrlField.text)
+            }
         }
 
         Item {

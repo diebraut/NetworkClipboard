@@ -42,6 +42,7 @@ public:
     Q_INVOKABLE void getLatest();
     Q_INVOKABLE void pollLatest();
     Q_INVOKABLE void discoverServer();
+    Q_INVOKABLE void connectToServerUrl(const QString &serverUrl);
     Q_INVOKABLE void selectServer(int index);
 
 signals:
