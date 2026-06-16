@@ -68,7 +68,7 @@ private:
     void probeDiscoveryUrl(const QUrl &url);
     void startHttpDiscovery();
     void clearDiscoveredServers(bool keepSelectedServer);
-    void addDiscoveredServer(const QJsonObject &object);
+    void addDiscoveredServer(const QJsonObject &object, const QString &fallbackUrl = {});
     void resolveServerName(int index, const QString &host);
     void checkSelectedServer();
     void loadSavedServer();

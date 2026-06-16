@@ -5,6 +5,7 @@
 #include <QDebug>
 #include <QHostInfo>
 #include <QHostAddress>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkDatagram>
@@ -27,7 +28,10 @@ constexpr auto DiscoveryRequest = "NETWORK_CLIPBOARD_DISCOVER_V1";
 
 QSet<QString> localSubnetHosts()
 {
-    QSet<QString> hosts;
+    QSet<QString> hosts{
+        QStringLiteral("127.0.0.1"),
+        QStringLiteral("localhost")
+    };
 
     const auto interfaces = QNetworkInterface::allInterfaces();
     for (const QNetworkInterface &networkInterface : interfaces) {
@@ -46,10 +50,9 @@ QSet<QString> localSubnetHosts()
 
             const quint32 ip = address.toIPv4Address();
             const quint32 base = ip & 0xFFFFFF00u;
+            hosts.insert(address.toString());
             for (quint32 host = 1; host < 255; ++host) {
                 const quint32 candidate = base | host;
-                if (candidate == ip)
-                    continue;
                 hosts.insert(QHostAddress(candidate).toString());
             }
         }
@@ -98,6 +101,43 @@ QString displayNameForServer(const QString &serverName, const QString &serverUrl
         displayName = QStringLiteral("Clipboard-Server");
 
     return displayName;
+}
+
+bool isLoopbackOrWildcardUrl(const QString &serverUrl)
+{
+    const QHostAddress address(QUrl(serverUrl).host());
+    return !address.isNull()
+        && (address.isLoopback() || address == QHostAddress::Any || address == QHostAddress::AnyIPv4);
+}
+
+QString endpointServerUrl(QUrl url)
+{
+    url.setPath({});
+    url.setQuery({});
+    url.setFragment({});
+
+    QString value = url.toString();
+    while (value.endsWith(QLatin1Char('/')))
+        value.chop(1);
+    return value;
+}
+
+QString discoveredServerUrl(const QJsonObject &object, const QString &fallbackUrl)
+{
+    QString url = object.value(QStringLiteral("url")).toString().trimmed();
+    const QJsonArray urls = object.value(QStringLiteral("urls")).toArray();
+    for (const QJsonValue &value : urls) {
+        const QString candidate = value.toString().trimmed();
+        if (!candidate.isEmpty() && !isLoopbackOrWildcardUrl(candidate)) {
+            url = candidate;
+            break;
+        }
+    }
+
+    if (!fallbackUrl.isEmpty() && (url.isEmpty() || isLoopbackOrWildcardUrl(url)))
+        url = fallbackUrl;
+
+    return url;
 }
 }
 
@@ -365,16 +405,7 @@ void NetworkClipboardClient::withAvailableServer(const QString &actionStatus,
             setToken(discoveredToken);
         updateServerName(object.value(QStringLiteral("serverName")).toString(), serverUrl);
 
-        if (!object.contains(QStringLiteral("agentActive"))) {
-            setServerActive(false);
-            setStatus(QStringLiteral("Windows-Dienst muss aktualisiert werden."));
-            if (failureAction)
-                failureAction();
-            reply->deleteLater();
-            return;
-        }
-
-        if (!object.value(QStringLiteral("agentActive")).toBool(false)) {
+        if (object.contains(QStringLiteral("agentActive")) && !object.value(QStringLiteral("agentActive")).toBool(false)) {
             setServerActive(false);
             setStatus(QStringLiteral("Windows Tray-Agent ist nicht aktiv."));
             if (failureAction)
@@ -404,7 +435,8 @@ void NetworkClipboardClient::handleDiscoveryResponse()
         if (object.value(QStringLiteral("service")).toString() != QStringLiteral("NetworkClipboard"))
             continue;
 
-        addDiscoveredServer(object);
+        const QString fallbackUrl = QStringLiteral("http://%1:%2").arg(datagram.senderAddress().toString()).arg(DiscoveryApiPorts.front());
+        addDiscoveredServer(object, fallbackUrl);
     }
 }
 
@@ -440,7 +472,7 @@ void NetworkClipboardClient::probeDiscoveryUrl(const QUrl &url)
         if (reply->error() == QNetworkReply::NoError) {
             const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
             if (object.value(QStringLiteral("service")).toString() == QStringLiteral("NetworkClipboard")) {
-                addDiscoveredServer(object);
+                addDiscoveredServer(object, endpointServerUrl(reply->url()));
             }
         }
 
@@ -511,16 +543,16 @@ void NetworkClipboardClient::clearDiscoveredServers(bool keepSelectedServer)
     }
 }
 
-void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object)
+void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object, const QString &fallbackUrl)
 {
-    const QString url = object.value(QStringLiteral("url")).toString().trimmed();
+    const QString url = discoveredServerUrl(object, fallbackUrl);
     if (url.isEmpty())
         return;
 
     const QString discoveredName = object.value(QStringLiteral("serverName")).toString();
     const QString name = displayNameForServer(discoveredName, url);
     const bool hasAgentStatus = object.contains(QStringLiteral("agentActive"));
-    const bool agentActive = object.value(QStringLiteral("agentActive")).toBool(false);
+    const bool serverAvailable = !hasAgentStatus || object.value(QStringLiteral("agentActive")).toBool(false);
 
     for (int i = 0; i < m_servers.size(); ++i) {
         QVariantMap existing = m_servers.at(i).toMap();
@@ -564,13 +596,11 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object)
                 updateServerName(existing.value(QStringLiteral("name")).toString(), url);
                 if (!existing.value(QStringLiteral("token")).toString().isEmpty())
                     setToken(existing.value(QStringLiteral("token")).toString());
-                setServerActive(agentActive);
+                setServerActive(serverAvailable);
                 saveSelectedServer();
-                setStatus(agentActive
+                setStatus(serverAvailable
                               ? QStringLiteral("Server aktiv: %1").arg(m_serverName)
-                              : (hasAgentStatus
-                                     ? QStringLiteral("Server gefunden, Windows Tray-Agent nicht aktiv: %1").arg(m_serverName)
-                                     : QStringLiteral("Server gefunden, Windows-Dienst muss aktualisiert werden: %1").arg(m_serverName)));
+                              : QStringLiteral("Server gefunden, Windows Tray-Agent nicht aktiv: %1").arg(m_serverName));
             }
             return;
         }
@@ -605,13 +635,11 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object)
         if (!discoveredToken.isEmpty())
             setToken(discoveredToken);
 
-        setServerActive(agentActive);
+        setServerActive(serverAvailable);
         saveSelectedServer();
-        setStatus(agentActive
+        setStatus(serverAvailable
                       ? QStringLiteral("Server aktiv: %1").arg(m_serverName)
-                      : (hasAgentStatus
-                             ? QStringLiteral("Server gefunden, Windows Tray-Agent nicht aktiv: %1").arg(m_serverName)
-                             : QStringLiteral("Server gefunden, Windows-Dienst muss aktualisiert werden: %1").arg(m_serverName)));
+                      : QStringLiteral("Server gefunden, Windows Tray-Agent nicht aktiv: %1").arg(m_serverName));
     } else {
         setStatus(QStringLiteral("Server gefunden: %1").arg(name));
     }
@@ -678,12 +706,12 @@ void NetworkClipboardClient::checkSelectedServer()
             const bool validServer = object.value(QStringLiteral("service")).toString() == QStringLiteral("NetworkClipboard");
             if (validServer) {
                 m_missedServerChecks = 0;
-                addDiscoveredServer(object);
+                addDiscoveredServer(object, serverUrl);
                 updateServerName(object.value(QStringLiteral("serverName")).toString(), serverUrl);
                 const QString discoveredToken = object.value(QStringLiteral("token")).toString();
                 if (!discoveredToken.isEmpty())
                     setToken(discoveredToken);
-                setServerActive(object.value(QStringLiteral("agentActive")).toBool(false));
+                setServerActive(!object.contains(QStringLiteral("agentActive")) || object.value(QStringLiteral("agentActive")).toBool(false));
                 saveSelectedServer();
             } else {
                 ++m_missedServerChecks;

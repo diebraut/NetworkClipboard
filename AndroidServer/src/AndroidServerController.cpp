@@ -7,6 +7,10 @@
 #include <QUrl>
 #include <QUuid>
 
+#ifdef Q_OS_ANDROID
+#include <QtCore/qcoreapplication_platform.h>
+#endif
+
 namespace {
 #ifdef Q_OS_ANDROID
 constexpr quint16 ApiPort = 8787;
@@ -71,6 +75,7 @@ void AndroidServerController::start()
 {
     QString error;
     m_deviceId = deviceId();
+    acquireMulticastLock();
     if (!m_server.start(ApiPort, m_token, deviceName(), &error)) {
         setStatus(QStringLiteral("Server konnte nicht gestartet werden: %1").arg(error));
         return;
@@ -79,6 +84,32 @@ void AndroidServerController::start()
     m_started = true;
     setStatus(QStringLiteral("Server aktiv auf Port %1").arg(m_server.port()));
     emit serverInfoChanged();
+}
+
+void AndroidServerController::acquireMulticastLock()
+{
+#ifdef Q_OS_ANDROID
+    QJniObject context = QNativeInterface::QAndroidApplication::context();
+    if (!context.isValid())
+        return;
+
+    QJniObject serviceName = QJniObject::fromString(QStringLiteral("wifi"));
+    QJniObject wifiManager = context.callObjectMethod("getSystemService",
+                                                       "(Ljava/lang/String;)Ljava/lang/Object;",
+                                                       serviceName.object<jstring>());
+    if (!wifiManager.isValid())
+        return;
+
+    QJniObject lockName = QJniObject::fromString(QStringLiteral("NetworkClipboardDiscovery"));
+    m_multicastLock = wifiManager.callObjectMethod("createMulticastLock",
+                                                   "(Ljava/lang/String;)Landroid/net/wifi/WifiManager$MulticastLock;",
+                                                   lockName.object<jstring>());
+    if (!m_multicastLock.isValid())
+        return;
+
+    m_multicastLock.callMethod<void>("setReferenceCounted", "(Z)V", false);
+    m_multicastLock.callMethod<void>("acquire", "()V");
+#endif
 }
 
 void AndroidServerController::onClipboardChanged()

@@ -7,6 +7,10 @@
 #include <QObject>
 #include <QTimer>
 
+#ifdef Q_OS_ANDROID
+#include <QJniObject>
+#endif
+
 class AndroidServerController : public QObject
 {
     Q_OBJECT
@@ -38,6 +42,7 @@ signals:
 
 private:
     void start();
+    void acquireMulticastLock();
     void onClipboardChanged();
     void publishClipboardText(const QString &text, bool force);
     void applyEntryToClipboard(const ClipboardEntry &entry);
@@ -59,4 +64,7 @@ private:
     qint64 m_ignoreClipboardChangesUntil = 0;
     QString m_ignoredClipboardContent;
     QString m_lastPublishedContent;
+#ifdef Q_OS_ANDROID
+    QJniObject m_multicastLock;
+#endif
 };
