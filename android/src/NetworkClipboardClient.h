@@ -65,6 +65,7 @@ private:
                              const std::function<void()> &failureAction = {});
     void handleDiscoveryResponse();
     void startInitialServerDiscovery();
+    bool sendDiscoveryDatagrams();
     void probeDiscoveryUrl(const QUrl &url);
     void startHttpDiscovery();
     void clearDiscoveredServers(bool keepSelectedServer);

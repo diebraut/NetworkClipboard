@@ -278,8 +278,7 @@ void NetworkClipboardClient::discoverServer()
 {
     clearDiscoveredServers(true);
     setStatus(QStringLiteral("Suche Clipboard-Server..."));
-    const qint64 bytesWritten = m_discoverySocket.writeDatagram(DiscoveryRequest, QHostAddress::Broadcast, DiscoveryPort);
-    if (bytesWritten < 0) {
+    if (!sendDiscoveryDatagrams()) {
         setStatus(QStringLiteral("UDP-Suche fehlgeschlagen, versuche HTTP..."));
     }
 
@@ -289,6 +288,33 @@ void NetworkClipboardClient::discoverServer()
         if (m_servers.isEmpty() && m_status.startsWith(QStringLiteral("Suche Clipboard-Server")))
             setStatus(QStringLiteral("Kein Clipboard-Server gefunden."));
     });
+}
+
+bool NetworkClipboardClient::sendDiscoveryDatagrams()
+{
+    bool wroteDatagram = m_discoverySocket.writeDatagram(DiscoveryRequest, QHostAddress::Broadcast, DiscoveryPort) >= 0;
+
+    const auto interfaces = QNetworkInterface::allInterfaces();
+    for (const QNetworkInterface &networkInterface : interfaces) {
+        const auto flags = networkInterface.flags();
+        if (!flags.testFlag(QNetworkInterface::IsUp)
+            || !flags.testFlag(QNetworkInterface::IsRunning)
+            || flags.testFlag(QNetworkInterface::IsLoopBack)) {
+            continue;
+        }
+
+        const auto entries = networkInterface.addressEntries();
+        for (const QNetworkAddressEntry &entry : entries) {
+            const QHostAddress broadcast = entry.broadcast();
+            if (broadcast.protocol() != QAbstractSocket::IPv4Protocol || broadcast.isNull())
+                continue;
+
+            wroteDatagram = m_discoverySocket.writeDatagram(DiscoveryRequest, broadcast, DiscoveryPort) >= 0
+                || wroteDatagram;
+        }
+    }
+
+    return wroteDatagram;
 }
 
 void NetworkClipboardClient::selectServer(int index)

@@ -7,6 +7,11 @@
 #include <QNetworkInterface>
 #include <QTcpSocket>
 
+#ifdef Q_OS_ANDROID
+#include <QJniObject>
+#include <QtCore/qcoreapplication_platform.h>
+#endif
+
 namespace {
 constexpr quint16 DiscoveryPort = 8788;
 constexpr auto DiscoveryRequest = "NETWORK_CLIPBOARD_DISCOVER_V1";
@@ -23,6 +28,40 @@ QByteArray reasonPhrase(int statusCode)
     default: return "Internal Server Error";
     }
 }
+
+#ifdef Q_OS_ANDROID
+QString androidWifiAddress()
+{
+    const QJniObject context = QNativeInterface::QAndroidApplication::context();
+    if (!context.isValid())
+        return {};
+
+    const QJniObject serviceName = QJniObject::fromString(QStringLiteral("wifi"));
+    const QJniObject wifiManager = context.callObjectMethod("getSystemService",
+                                                            "(Ljava/lang/String;)Ljava/lang/Object;",
+                                                            serviceName.object<jstring>());
+    if (!wifiManager.isValid())
+        return {};
+
+    const QJniObject connectionInfo = wifiManager.callObjectMethod("getConnectionInfo",
+                                                                   "()Landroid/net/wifi/WifiInfo;");
+    if (!connectionInfo.isValid())
+        return {};
+
+    const jint ip = connectionInfo.callMethod<jint>("getIpAddress", "()I");
+    if (ip == 0)
+        return {};
+
+    const QString address = QStringLiteral("%1.%2.%3.%4")
+                                .arg(ip & 0xff)
+                                .arg((ip >> 8) & 0xff)
+                                .arg((ip >> 16) & 0xff)
+                                .arg((ip >> 24) & 0xff);
+    if (address == QStringLiteral("0.0.0.0") || address.startsWith(QStringLiteral("127.")))
+        return {};
+    return address;
+}
+#endif
 
 QStringList localServerUrls(quint16 port)
 {
@@ -46,6 +85,12 @@ QStringList localServerUrls(quint16 port)
                 urls.append(QStringLiteral("http://%1:%2").arg(ip).arg(port));
         }
     }
+
+#ifdef Q_OS_ANDROID
+    const QString wifiAddress = androidWifiAddress();
+    if (!wifiAddress.isEmpty() && !wifiAddress.startsWith(QStringLiteral("169.254.")))
+        urls.append(QStringLiteral("http://%1:%2").arg(wifiAddress).arg(port));
+#endif
 
     urls.removeDuplicates();
     return urls;

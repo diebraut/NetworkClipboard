@@ -61,6 +61,7 @@ private:
     void withAvailableServer(const QString &actionStatus, const std::function<void(const QString &serverUrl)> &action);
     void handleDiscoveryResponse();
     void startInitialServerDiscovery();
+    bool sendDiscoveryDatagrams();
     void probeDiscoveryUrl(const QUrl &url);
     void startHttpDiscovery();
     void clearDiscoveredServers(bool keepSelectedServer);
