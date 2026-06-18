@@ -14,6 +14,12 @@ QString withUnixLineEndings(QString text)
     return text;
 }
 
+bool isPasteboardAuthorizationError(const QString &text)
+{
+    return text.contains(QStringLiteral("PBErrorDomain"))
+        && text.contains(QStringLiteral("Operation not authorized"));
+}
+
 constexpr auto PasteSettingsOfferSeenKey = "pasteSettingsOfferSeen";
 }
 
@@ -31,7 +37,8 @@ bool ClipboardBridge::shouldOfferPasteSettings() const
 
 QString ClipboardBridge::text() const
 {
-    return withUnixLineEndings(QGuiApplication::clipboard()->text());
+    const QString text = withUnixLineEndings(QGuiApplication::clipboard()->text());
+    return isPasteboardAuthorizationError(text) ? QString{} : text;
 }
 
 void ClipboardBridge::setText(const QString &text)

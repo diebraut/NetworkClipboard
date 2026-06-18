@@ -8,6 +8,7 @@
 #include <QUuid>
 
 #ifdef Q_OS_ANDROID
+#include <QJniEnvironment>
 #include <QtCore/qcoreapplication_platform.h>
 #endif
 
@@ -74,6 +75,14 @@ void AndroidServerController::copyServerInfo()
 
 void AndroidServerController::start()
 {
+#ifdef Q_OS_ANDROID
+    if (requestLocalNetworkPermission()) {
+        setStatus(QStringLiteral("Bitte die Berechtigung für Geräte in der Nähe bzw. das lokale Netzwerk erlauben."));
+        QTimer::singleShot(1500, this, &AndroidServerController::start);
+        return;
+    }
+#endif
+
     QString error;
     m_deviceId = deviceId();
     acquireMulticastLock();
@@ -88,6 +97,52 @@ void AndroidServerController::start()
     setStatus(urls.isEmpty()
                   ? QStringLiteral("Server aktiv auf Port %1, aber keine LAN-IP gefunden. Android und iPhone muessen im selben WLAN sein.").arg(m_server.port())
                   : QStringLiteral("Server aktiv: %1").arg(urls.join(QStringLiteral(", "))));
+}
+
+bool AndroidServerController::requestLocalNetworkPermission()
+{
+#ifdef Q_OS_ANDROID
+    const jint sdkVersion = QJniObject::getStaticField<jint>("android/os/Build$VERSION", "SDK_INT");
+    QString permission;
+    if (sdkVersion >= 37)
+        permission = QStringLiteral("android.permission.ACCESS_LOCAL_NETWORK");
+    else if (sdkVersion >= 33)
+        permission = QStringLiteral("android.permission.NEARBY_WIFI_DEVICES");
+    else
+        return false;
+
+    const QJniObject context = QNativeInterface::QAndroidApplication::context();
+    if (!context.isValid())
+        return false;
+
+    const QJniObject permissionName = QJniObject::fromString(permission);
+    const jint granted = context.callMethod<jint>("checkSelfPermission",
+                                                  "(Ljava/lang/String;)I",
+                                                  permissionName.object<jstring>());
+    if (granted == 0)
+        return false;
+
+    if (m_localNetworkPermissionRequested)
+        return true;
+    if (!QNativeInterface::QAndroidApplication::isActivityContext())
+        return true;
+
+    const QJniObject activity = context;
+    QJniEnvironment env;
+    jclass stringClass = env->FindClass("java/lang/String");
+    jobjectArray permissions = env->NewObjectArray(1, stringClass, nullptr);
+    env->SetObjectArrayElement(permissions, 0, permissionName.object<jstring>());
+    activity.callMethod<void>("requestPermissions",
+                              "([Ljava/lang/String;I)V",
+                              permissions,
+                              1001);
+    env->DeleteLocalRef(permissions);
+    env->DeleteLocalRef(stringClass);
+    m_localNetworkPermissionRequested = true;
+    return true;
+#else
+    return false;
+#endif
 }
 
 void AndroidServerController::acquireMulticastLock()

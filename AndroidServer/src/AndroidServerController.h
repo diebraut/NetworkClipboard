@@ -44,6 +44,7 @@ signals:
 
 private:
     void start();
+    bool requestLocalNetworkPermission();
     void acquireMulticastLock();
     void onClipboardChanged();
     void publishClipboardText(const QString &text, bool force);
@@ -64,6 +65,7 @@ private:
     QString m_latestContent;
     bool m_autoPublish = true;
     bool m_started = false;
+    bool m_localNetworkPermissionRequested = false;
     qint64 m_ignoreClipboardChangesUntil = 0;
     QString m_ignoredClipboardContent;
     QString m_lastPublishedContent;
