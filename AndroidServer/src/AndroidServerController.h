@@ -44,6 +44,7 @@ signals:
 
 private:
     void start();
+    bool startForegroundService(QString *errorMessage = nullptr);
     bool requestLocalNetworkPermission();
     void acquireMulticastLock();
     void onClipboardChanged();

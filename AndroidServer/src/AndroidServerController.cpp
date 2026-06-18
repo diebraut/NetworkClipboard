@@ -2,7 +2,10 @@
 
 #include <QDateTime>
 #include <QGuiApplication>
+#include <QHostAddress>
 #include <QHostInfo>
+#include <QJsonDocument>
+#include <QNetworkInterface>
 #include <QSettings>
 #include <QUrl>
 #include <QUuid>
@@ -76,6 +79,13 @@ void AndroidServerController::copyServerInfo()
 void AndroidServerController::start()
 {
 #ifdef Q_OS_ANDROID
+    QString foregroundServiceError;
+    if (!startForegroundService(&foregroundServiceError)) {
+        setStatus(QStringLiteral("Foreground-Service konnte nicht gestartet werden: %1")
+                      .arg(foregroundServiceError));
+        return;
+    }
+
     if (requestLocalNetworkPermission()) {
         setStatus(QStringLiteral("Bitte die Berechtigung für Geräte in der Nähe bzw. das lokale Netzwerk erlauben."));
         QTimer::singleShot(1500, this, &AndroidServerController::start);
@@ -83,20 +93,55 @@ void AndroidServerController::start()
     }
 #endif
 
-    QString error;
     m_deviceId = deviceId();
     acquireMulticastLock();
+#ifdef Q_OS_ANDROID
+    m_started = true;
+#else
+    QString error;
     if (!m_server.start(ApiPort, m_token, deviceName(), &error)) {
         setStatus(QStringLiteral("Server konnte nicht gestartet werden: %1").arg(error));
         return;
     }
-
     m_started = true;
+#endif
     emit serverInfoChanged();
     const QStringList urls = currentServerUrls();
     setStatus(urls.isEmpty()
-                  ? QStringLiteral("Server aktiv auf Port %1, aber keine LAN-IP gefunden. Android und iPhone muessen im selben WLAN sein.").arg(m_server.port())
+                  ? QStringLiteral("Server aktiv auf Port %1, aber keine LAN-IP gefunden. Android und iPhone muessen im selben WLAN sein.").arg(ApiPort)
                   : QStringLiteral("Server aktiv: %1").arg(urls.join(QStringLiteral(", "))));
+}
+
+bool AndroidServerController::startForegroundService(QString *errorMessage)
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = QNativeInterface::QAndroidApplication::context();
+    if (!context.isValid()) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("Android-Kontext nicht verfuegbar.");
+        return false;
+    }
+
+    QJniEnvironment env;
+    const QJniObject token = QJniObject::fromString(m_token);
+    const QJniObject name = QJniObject::fromString(deviceName());
+    QJniObject::callStaticMethod<void>(
+        "org/qtproject/example/NetworkClipboardAndroidServer/NetworkClipboardForegroundService",
+        "start",
+        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V",
+        context.object(),
+        token.object<jstring>(),
+        name.object<jstring>());
+
+    if (env.checkAndClearExceptions()) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("Android hat den Dienststart abgelehnt.");
+        return false;
+    }
+#else
+    Q_UNUSED(errorMessage);
+#endif
+    return true;
 }
 
 bool AndroidServerController::requestLocalNetworkPermission()
@@ -206,7 +251,18 @@ void AndroidServerController::publishClipboardText(const QString &text, bool for
 
     m_lastPublishedContent = text;
     m_store.setLatest(entry);
-    setStatus(QStringLiteral("Server aktiv auf Port %1. Android Clipboard veroeffentlicht.").arg(m_server.port()));
+#ifdef Q_OS_ANDROID
+    const QJniObject context = QNativeInterface::QAndroidApplication::context();
+    const QJniObject json = QJniObject::fromString(
+        QString::fromUtf8(QJsonDocument(entry.toJson()).toJson(QJsonDocument::Compact)));
+    QJniObject::callStaticMethod<void>(
+        "org/qtproject/example/NetworkClipboardAndroidServer/NetworkClipboardForegroundService",
+        "publishEntry",
+        "(Landroid/content/Context;Ljava/lang/String;)V",
+        context.object(),
+        json.object<jstring>());
+#endif
+    setStatus(QStringLiteral("Server aktiv auf Port %1. Android Clipboard veroeffentlicht.").arg(ApiPort));
 }
 
 void AndroidServerController::applyEntryToClipboard(const ClipboardEntry &entry)
@@ -218,7 +274,7 @@ void AndroidServerController::applyEntryToClipboard(const ClipboardEntry &entry)
     m_ignoredClipboardContent = entry.content;
     m_lastPublishedContent = entry.content;
     m_clipboard->setText(entry.content);
-    setStatus(QStringLiteral("Server aktiv auf Port %1. Netzwerk-Clipboard nach Android uebernommen.").arg(m_server.port()));
+    setStatus(QStringLiteral("Server aktiv auf Port %1. Netzwerk-Clipboard nach Android uebernommen.").arg(ApiPort));
 }
 
 void AndroidServerController::setStatus(const QString &status)
@@ -239,8 +295,12 @@ void AndroidServerController::setLatestContent(const QString &content)
 
 QString AndroidServerController::deviceName() const
 {
+#ifdef Q_OS_ANDROID
+    return QStringLiteral("Android-Server");
+#else
     const QString hostName = QHostInfo::localHostName().trimmed();
     return hostName.isEmpty() ? QStringLiteral("Android Server") : hostName;
+#endif
 }
 
 QString AndroidServerController::deviceId()
@@ -265,5 +325,25 @@ QString AndroidServerController::currentServerInfo() const
 
 QStringList AndroidServerController::currentServerUrls() const
 {
+#ifdef Q_OS_ANDROID
+    QStringList urls{QStringLiteral("http://127.0.0.1:%1").arg(ApiPort)};
+    const auto interfaces = QNetworkInterface::allInterfaces();
+    for (const QNetworkInterface &networkInterface : interfaces) {
+        const auto flags = networkInterface.flags();
+        if (!flags.testFlag(QNetworkInterface::IsUp)
+            || !flags.testFlag(QNetworkInterface::IsRunning)
+            || flags.testFlag(QNetworkInterface::IsLoopBack)) {
+            continue;
+        }
+        for (const QNetworkAddressEntry &entry : networkInterface.addressEntries()) {
+            const QHostAddress address = entry.ip();
+            if (address.protocol() == QAbstractSocket::IPv4Protocol && !address.isLoopback())
+                urls.append(QStringLiteral("http://%1:%2").arg(address.toString()).arg(ApiPort));
+        }
+    }
+    urls.removeDuplicates();
+    return urls;
+#else
     return m_server.serverUrls();
+#endif
 }

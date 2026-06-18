@@ -109,7 +109,7 @@ ApplicationWindow {
         }
 
         Label {
-            text: "Hinweis: Android kann Clipboard-Zugriff im Hintergrund je nach Version einschränken. Für echten Dauerbetrieb folgt später ein Foreground-Service."
+            text: "Der Foreground-Service hält den lokalen Server im Hintergrund aktiv. Android kann den Zugriff auf die Zwischenablage im Hintergrund trotzdem einschränken."
             color: "#6b7280"
             font.pixelSize: 12
             Layout.fillWidth: true

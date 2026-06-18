@@ -124,6 +124,9 @@ QString endpointServerUrl(QUrl url)
 
 QString discoveredServerUrl(const QJsonObject &object, const QString &fallbackUrl)
 {
+    if (!fallbackUrl.isEmpty() && isLoopbackOrWildcardUrl(fallbackUrl))
+        return fallbackUrl;
+
     QString url = object.value(QStringLiteral("url")).toString().trimmed();
     const QJsonArray urls = object.value(QStringLiteral("urls")).toArray();
     for (const QJsonValue &value : urls) {
@@ -306,10 +309,18 @@ void NetworkClipboardClient::connectToServerUrl(const QString &serverUrl)
     while (value.endsWith(QLatin1Char('/')))
         value.chop(1);
 
-    const QUrl url(value);
+    QUrl url(value);
     if (!url.isValid() || url.scheme().isEmpty() || url.host().isEmpty()
         || (url.scheme() != QStringLiteral("http") && url.scheme() != QStringLiteral("https"))) {
         setStatus(QStringLiteral("Ungültige Server URL."));
+        return;
+    }
+
+    if (url.path() == QStringLiteral("/api/discovery")) {
+        url.setPath({});
+        value = endpointServerUrl(url);
+    } else if (!url.path().isEmpty() && url.path() != QStringLiteral("/")) {
+        setStatus(QStringLiteral("Bitte nur die Server-URL ohne API-Pfad eingeben."));
         return;
     }
 
@@ -576,6 +587,7 @@ void NetworkClipboardClient::probeDiscoveryUrl(const QUrl &url)
 void NetworkClipboardClient::startHttpDiscovery()
 {
     m_pendingDiscoveryUrls.clear();
+    probeDiscoveryUrl(QUrl(QStringLiteral("http://127.0.0.1:8787/api/discovery")));
 
     const QSet<QString> hosts = localSubnetHosts();
     setStatus(QStringLiteral("Suche Clipboard-Server (%1 Adressen)...").arg(hosts.size()));
@@ -646,6 +658,7 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object, cons
             const bool shouldSelectServer = m_selectedServerIndex == -1
                 || m_selectedServerIndex == i
                 || !m_serverActive
+                || isLoopbackOrWildcardUrl(url)
                 || (!m_serverUrl.isEmpty() && m_serverUrl == url);
             bool changed = false;
 
@@ -703,6 +716,7 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object, cons
 
     const bool shouldSelectServer = m_selectedServerIndex == -1
         || !m_serverActive
+        || isLoopbackOrWildcardUrl(url)
         || (!m_serverUrl.isEmpty() && m_serverUrl == url);
     if (shouldSelectServer) {
         m_selectedServerIndex = newServerIndex;
