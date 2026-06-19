@@ -19,6 +19,7 @@ class NetworkClipboardClient : public QObject
     Q_PROPERTY(QVariantList servers READ servers NOTIFY serversChanged)
     Q_PROPERTY(int selectedServerIndex READ selectedServerIndex NOTIFY selectedServerIndexChanged)
     Q_PROPERTY(bool serverActive READ serverActive NOTIFY serverActiveChanged)
+    Q_PROPERTY(bool selectedServerMain READ selectedServerMain NOTIFY serversChanged)
     Q_PROPERTY(QString token READ token WRITE setToken NOTIFY tokenChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
 
@@ -32,6 +33,7 @@ public:
     QVariantList servers() const;
     int selectedServerIndex() const;
     bool serverActive() const;
+    bool selectedServerMain() const;
 
     QString token() const;
     void setToken(const QString &token);
@@ -73,6 +75,7 @@ private:
     void finishKnownServerCheck();
     void activateServer(int index);
     void loadSavedServer();
+    void saveKnownServers();
     void saveSelectedServer();
     void setServerActive(bool active);
     void updateServerName(const QString &serverName, const QString &serverUrl);

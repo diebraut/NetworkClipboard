@@ -227,7 +227,10 @@ ApplicationWindow {
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
                         textFormat: Text.RichText
-                        text: serverDisplayText(networkClipboard.serverName, networkClipboard.serverActive)
+                        text: serverListText(
+                            networkClipboard.serverName,
+                            networkClipboard.selectedServerMain,
+                            networkClipboard.serverActive)
                     }
                 }
 
@@ -251,26 +254,6 @@ ApplicationWindow {
             Button {
                 text: "Suchen"
                 onClicked: networkClipboard.discoverServer()
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 8
-
-            TextField {
-                id: serverUrlField
-                Layout.fillWidth: true
-                text: networkClipboard.serverUrl
-                placeholderText: "http://192.168.68.51:8787"
-                inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                onAccepted: networkClipboard.connectToServerUrl(text)
-            }
-
-            Button {
-                text: "Verbinden"
-                enabled: serverUrlField.text.trim().length > 0
-                onClicked: networkClipboard.connectToServerUrl(serverUrlField.text)
             }
         }
 
