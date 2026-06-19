@@ -124,6 +124,9 @@ QString endpointServerUrl(QUrl url)
 
 QString discoveredServerUrl(const QJsonObject &object, const QString &fallbackUrl)
 {
+    if (!fallbackUrl.isEmpty())
+        return fallbackUrl;
+
     QString url = object.value(QStringLiteral("url")).toString().trimmed();
     const QJsonArray urls = object.value(QStringLiteral("urls")).toArray();
     for (const QJsonValue &value : urls) {
@@ -532,7 +535,7 @@ void NetworkClipboardClient::probeDiscoveryUrl(const QUrl &url, bool networkScan
     m_pendingDiscoveryUrls.insert(urlString);
 
     QNetworkReply *reply = m_network.get(QNetworkRequest(url));
-    QTimer::singleShot(networkScan ? 550 : 900, reply, [reply]() {
+    QTimer::singleShot(networkScan ? 1200 : 1500, reply, [reply]() {
         if (reply->isRunning())
             reply->abort();
     });
@@ -583,10 +586,10 @@ void NetworkClipboardClient::startNetworkScan()
     for (const QVariant &serverValue : std::as_const(m_servers))
         knownUrls.insert(serverValue.toMap().value(QStringLiteral("url")).toString());
 
-    for (const QString &host : hosts) {
-        if (host == QStringLiteral("localhost") || host == QStringLiteral("127.0.0.1"))
-            continue;
-        for (const quint16 port : DiscoveryApiPorts) {
+    for (const quint16 port : DiscoveryApiPorts) {
+        for (const QString &host : hosts) {
+            if (host == QStringLiteral("localhost") || host == QStringLiteral("127.0.0.1"))
+                continue;
             const QUrl url(QStringLiteral("http://%1:%2/api/discovery").arg(host).arg(port));
             if (!knownUrls.contains(endpointServerUrl(url)))
                 m_networkScanQueue.enqueue(url);
@@ -608,7 +611,7 @@ void NetworkClipboardClient::startNetworkScan()
 
 void NetworkClipboardClient::launchNextNetworkScanProbe()
 {
-    constexpr int MaxConcurrentProbes = 24;
+    constexpr int MaxConcurrentProbes = 32;
     while (m_networkScanPending < MaxConcurrentProbes && !m_networkScanQueue.isEmpty()) {
         ++m_networkScanPending;
         probeDiscoveryUrl(m_networkScanQueue.dequeue(), true);
