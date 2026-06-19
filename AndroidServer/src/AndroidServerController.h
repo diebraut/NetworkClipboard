@@ -20,6 +20,7 @@ class AndroidServerController : public QObject
     Q_PROPERTY(QString serverUrlsText READ serverUrlsText NOTIFY serverInfoChanged)
     Q_PROPERTY(QString latestContent READ latestContent NOTIFY latestContentChanged)
     Q_PROPERTY(bool autoPublish READ autoPublish WRITE setAutoPublish NOTIFY autoPublishChanged)
+    Q_PROPERTY(bool masterServer READ masterServer WRITE setMasterServer NOTIFY masterServerChanged)
 
 public:
     explicit AndroidServerController(QObject *parent = nullptr);
@@ -31,6 +32,8 @@ public:
     QString latestContent() const;
     bool autoPublish() const;
     void setAutoPublish(bool enabled);
+    bool masterServer() const;
+    void setMasterServer(bool masterServer);
 
     Q_INVOKABLE void publishClipboardNow();
     Q_INVOKABLE void copyServerInfo();
@@ -41,6 +44,7 @@ signals:
     void serverInfoChanged();
     void latestContentChanged();
     void autoPublishChanged();
+    void masterServerChanged();
 
 private:
     void start();
@@ -65,6 +69,7 @@ private:
     QString m_deviceId;
     QString m_latestContent;
     bool m_autoPublish = true;
+    bool m_masterServer = false;
     bool m_started = false;
     bool m_localNetworkPermissionRequested = false;
     qint64 m_ignoreClipboardChangesUntil = 0;

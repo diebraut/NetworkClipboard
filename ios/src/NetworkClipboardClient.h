@@ -69,6 +69,9 @@ private:
     void addDiscoveredServer(const QJsonObject &object, const QString &fallbackUrl = {});
     void resolveServerName(int index, const QString &host);
     void checkSelectedServer();
+    void checkKnownServers();
+    void finishKnownServerCheck();
+    void activateServer(int index);
     void loadSavedServer();
     void saveSelectedServer();
     void setServerActive(bool active);
@@ -83,8 +86,10 @@ private:
     int m_selectedServerIndex = -1;
     int m_missedServerChecks = 0;
     bool m_serverCheckInFlight = false;
+    bool m_knownServerCheckInFlight = false;
     bool m_latestRequestInFlight = false;
     bool m_serverActive = false;
+    int m_knownServerCheckPending = 0;
     QString m_serverUrl;
     QString m_serverName;
     QString m_token;

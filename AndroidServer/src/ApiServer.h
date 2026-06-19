@@ -19,6 +19,7 @@ public:
     explicit ApiServer(ClipboardStore *store, QObject *parent = nullptr);
 
     bool start(quint16 port, const QString &token, const QString &deviceName, QString *errorMessage = nullptr);
+    void setMasterServer(bool masterServer);
     quint16 port() const;
     QStringList serverUrls() const;
 
@@ -47,4 +48,5 @@ private:
     QUdpSocket m_discoverySocket;
     QString m_token;
     QString m_deviceName;
+    bool m_masterServer = false;
 };

@@ -34,6 +34,8 @@ AndroidServerController::AndroidServerController(QObject *parent)
     : QObject(parent), m_server(&m_store), m_clipboard(QGuiApplication::clipboard())
 {
     QSettings settings;
+    m_masterServer = settings.value(QStringLiteral("server/isMaster"), false).toBool();
+    m_server.setMasterServer(m_masterServer);
     m_token = settings.value(QStringLiteral("server/token")).toString();
     if (m_token.isEmpty()) {
         m_token = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -57,6 +59,7 @@ QString AndroidServerController::serverInfo() const { return currentServerInfo()
 QString AndroidServerController::serverUrlsText() const { return currentServerUrls().join(QLatin1Char('\n')); }
 QString AndroidServerController::latestContent() const { return m_latestContent; }
 bool AndroidServerController::autoPublish() const { return m_autoPublish; }
+bool AndroidServerController::masterServer() const { return m_masterServer; }
 
 void AndroidServerController::setAutoPublish(bool enabled)
 {
@@ -112,6 +115,18 @@ void AndroidServerController::start()
                   : QStringLiteral("Server aktiv: %1").arg(urls.join(QStringLiteral(", "))));
 }
 
+void AndroidServerController::setMasterServer(bool masterServer)
+{
+    if (m_masterServer == masterServer)
+        return;
+    m_masterServer = masterServer;
+    QSettings settings;
+    settings.setValue(QStringLiteral("server/isMaster"), m_masterServer);
+    m_server.setMasterServer(m_masterServer);
+    emit masterServerChanged();
+    startForegroundService();
+}
+
 bool AndroidServerController::startForegroundService(QString *errorMessage)
 {
 #ifdef Q_OS_ANDROID
@@ -128,10 +143,11 @@ bool AndroidServerController::startForegroundService(QString *errorMessage)
     QJniObject::callStaticMethod<void>(
         "org/qtproject/example/NetworkClipboardAndroidServer/NetworkClipboardForegroundService",
         "start",
-        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V",
+        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Z)V",
         context.object(),
         token.object<jstring>(),
-        name.object<jstring>());
+        name.object<jstring>(),
+        static_cast<jboolean>(m_masterServer));
 
     if (env.checkAndClearExceptions()) {
         if (errorMessage)

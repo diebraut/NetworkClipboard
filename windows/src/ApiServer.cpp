@@ -220,6 +220,9 @@ void ApiServer::processRequest(QTcpSocket *socket, const HttpRequest &request)
 
     if (request.method == QStringLiteral("POST") && request.path == QStringLiteral("/api/agent/heartbeat")) {
         m_lastAgentHeartbeat = QDateTime::currentMSecsSinceEpoch();
+        const QJsonObject heartbeat = QJsonDocument::fromJson(request.body).object();
+        if (heartbeat.contains(QStringLiteral("isMaster")))
+            m_isMaster = heartbeat.value(QStringLiteral("isMaster")).toBool(true);
         sendJson(socket, 200, {{QStringLiteral("ok"), true}});
         return;
     }
@@ -263,6 +266,7 @@ QJsonObject ApiServer::discoveryResponse(const QStringList &urls) const
         {QStringLiteral("url"), urls.value(0)},
         {QStringLiteral("urls"), urlArray},
         {QStringLiteral("token"), m_token},
+        {QStringLiteral("isMaster"), m_isMaster},
         {QStringLiteral("agentActive"), isAgentActive()}
     };
 }

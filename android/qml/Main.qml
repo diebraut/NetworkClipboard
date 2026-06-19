@@ -64,10 +64,15 @@ ApplicationWindow {
     }
 
     function serverDisplayText(name, active) {
-        const label = active && name.length > 0 ? name : "Kein Server aktiv"
+        const label = name.length > 0 ? name : "Unbekannter Server"
         return "<span style=\"color:" + (active ? "#16a34a" : "#6b7280")
-            + "; font-weight:600; text-decoration:" + (active ? "none" : "line-through")
-            + ";\">" + label + "</span>"
+            + "; font-weight:600;\">" + label + "</span>"
+    }
+
+    function serverListText(name, mainServer, active) {
+        const role = mainServer ? "Main-Server" : "Subserver"
+        return serverDisplayText(name, active)
+            + "<span style=\"color:#6b7280;\"> · " + role + "</span>"
     }
 
     function escapeHtml(text) {
@@ -251,7 +256,10 @@ ApplicationWindow {
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
                         textFormat: Text.RichText
-                        text: serverDisplayText(networkClipboard.serverName, networkClipboard.serverActive)
+                        text: serverListText(
+                            networkClipboard.serverName,
+                            networkClipboard.selectedServerMain,
+                            networkClipboard.serverActive)
                     }
                 }
 
@@ -260,7 +268,7 @@ ApplicationWindow {
                     highlighted: serverBox.highlightedIndex === index
                     contentItem: Text {
                         textFormat: Text.RichText
-                        text: serverDisplayText(modelData.name, index === networkClipboard.selectedServerIndex && networkClipboard.serverActive)
+                        text: serverListText(modelData.name, modelData.main, modelData.active)
                         elide: Text.ElideRight
                         verticalAlignment: Text.AlignVCenter
                     }
@@ -273,28 +281,14 @@ ApplicationWindow {
             }
 
             Button {
-                text: "Suchen"
+                Layout.preferredWidth: 112
+                text: networkClipboard.discoveryInProgress
+                    ? (networkClipboard.discoveryTotal > 0
+                        ? networkClipboard.discoveryCompleted + " / " + networkClipboard.discoveryTotal
+                        : "Suche...")
+                    : "Suchen"
+                enabled: !networkClipboard.discoveryInProgress
                 onClicked: networkClipboard.discoverServer()
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 8
-
-            TextField {
-                id: serverUrlField
-                Layout.fillWidth: true
-                text: networkClipboard.serverUrl
-                placeholderText: "http://192.168.68.51:8787"
-                inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                onAccepted: networkClipboard.connectToServerUrl(text)
-            }
-
-            Button {
-                text: "Verbinden"
-                enabled: serverUrlField.text.trim().length > 0
-                onClicked: networkClipboard.connectToServerUrl(serverUrlField.text)
             }
         }
 

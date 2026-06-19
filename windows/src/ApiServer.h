@@ -46,5 +46,6 @@ private:
     QTcpServer m_server;
     QUdpSocket m_discoverySocket;
     QString m_token;
+    bool m_isMaster = true;
     qint64 m_lastAgentHeartbeat = 0;
 };

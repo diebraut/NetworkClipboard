@@ -65,6 +65,12 @@ ApplicationWindow {
             + ";\">" + label + "</span>"
     }
 
+    function serverListText(name, mainServer, active) {
+        const role = mainServer ? "Main-Server" : "Subserver"
+        return serverDisplayText(name, active)
+            + "<span style=\"color:#6b7280;\"> · " + role + "</span>"
+    }
+
     function escapeHtml(text) {
         return text.replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
@@ -230,7 +236,7 @@ ApplicationWindow {
                     highlighted: serverBox.highlightedIndex === index
                     contentItem: Text {
                         textFormat: Text.RichText
-                        text: serverDisplayText(modelData.name, index === networkClipboard.selectedServerIndex && networkClipboard.serverActive)
+                        text: serverListText(modelData.name, modelData.main, modelData.active)
                         elide: Text.ElideRight
                         verticalAlignment: Text.AlignVCenter
                     }

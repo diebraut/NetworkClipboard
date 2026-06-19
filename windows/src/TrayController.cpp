@@ -13,6 +13,7 @@
 #include <QNetworkRequest>
 #include <QProcess>
 #include <QStyle>
+#include <QSettings>
 #include <QUuid>
 
 namespace {
@@ -94,6 +95,9 @@ bool isServiceRunning()
 TrayController::TrayController(const QString &deviceId, const QString &deviceName, QObject *parent)
     : QObject(parent), m_clipboard(QApplication::clipboard()), m_deviceId(deviceId), m_deviceName(deviceName)
 {
+    QSettings settings;
+    m_isMaster = settings.value(QStringLiteral("server/isMaster"), true).toBool();
+
     m_menu = new QMenu();
 
     QAction *pasteAction = m_menu->addAction(QStringLiteral("Paste from Network"));
@@ -110,6 +114,11 @@ TrayController::TrayController(const QString &deviceId, const QString &deviceNam
     m_autoSendAction->setCheckable(true);
     m_autoSendAction->setChecked(m_autoSendEnabled);
     connect(m_autoSendAction, &QAction::toggled, this, &TrayController::setAutoSendEnabled);
+
+    m_masterAction = m_menu->addAction(QStringLiteral("Is Master"));
+    m_masterAction->setCheckable(true);
+    m_masterAction->setChecked(m_isMaster);
+    connect(m_masterAction, &QAction::toggled, this, &TrayController::setMasterServer);
 
     m_menu->addSeparator();
     m_serviceAction = m_menu->addAction(QStringLiteral("Start Server Service"));
@@ -187,7 +196,10 @@ void TrayController::sendAgentHeartbeat()
     if (m_token.isEmpty() || !m_serverUrl.isValid())
         return;
 
-    QNetworkReply *reply = m_network.post(apiRequest(QStringLiteral("/api/agent/heartbeat")), QByteArray("{}"));
+    const QJsonObject heartbeat{{QStringLiteral("isMaster"), m_isMaster}};
+    QNetworkReply *reply = m_network.post(
+        apiRequest(QStringLiteral("/api/agent/heartbeat")),
+        QJsonDocument(heartbeat).toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
 }
 
@@ -321,6 +333,14 @@ void TrayController::updateServiceStatus()
 void TrayController::setAutoSendEnabled(bool enabled)
 {
     m_autoSendEnabled = enabled;
+}
+
+void TrayController::setMasterServer(bool isMaster)
+{
+    m_isMaster = isMaster;
+    QSettings settings;
+    settings.setValue(QStringLiteral("server/isMaster"), m_isMaster);
+    sendAgentHeartbeat();
 }
 
 void TrayController::sendEntryToServer(const ClipboardEntry &entry, bool showSuccessMessage)

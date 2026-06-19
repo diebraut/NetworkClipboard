@@ -2,12 +2,17 @@
 
 #include <QNetworkAccessManager>
 #include <QObject>
+#include <QQueue>
 #include <QSet>
 #include <QString>
 #include <QTimer>
 #include <QUdpSocket>
 #include <QUrl>
 #include <QVariantList>
+
+#ifdef Q_OS_ANDROID
+#include <QJniObject>
+#endif
 
 #include <functional>
 
@@ -19,6 +24,10 @@ class NetworkClipboardClient : public QObject
     Q_PROPERTY(QVariantList servers READ servers NOTIFY serversChanged)
     Q_PROPERTY(int selectedServerIndex READ selectedServerIndex NOTIFY selectedServerIndexChanged)
     Q_PROPERTY(bool serverActive READ serverActive NOTIFY serverActiveChanged)
+    Q_PROPERTY(bool selectedServerMain READ selectedServerMain NOTIFY selectedServerMainChanged)
+    Q_PROPERTY(bool discoveryInProgress READ discoveryInProgress NOTIFY discoveryProgressChanged)
+    Q_PROPERTY(int discoveryCompleted READ discoveryCompleted NOTIFY discoveryProgressChanged)
+    Q_PROPERTY(int discoveryTotal READ discoveryTotal NOTIFY discoveryProgressChanged)
     Q_PROPERTY(QString token READ token WRITE setToken NOTIFY tokenChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
 
@@ -32,6 +41,10 @@ public:
     QVariantList servers() const;
     int selectedServerIndex() const;
     bool serverActive() const;
+    bool selectedServerMain() const;
+    bool discoveryInProgress() const;
+    int discoveryCompleted() const;
+    int discoveryTotal() const;
 
     QString token() const;
     void setToken(const QString &token);
@@ -51,6 +64,8 @@ signals:
     void serversChanged();
     void selectedServerIndexChanged();
     void serverActiveChanged();
+    void selectedServerMainChanged();
+    void discoveryProgressChanged();
     void tokenChanged();
     void statusChanged();
     void latestReceived(const QString &text);
@@ -66,14 +81,21 @@ private:
                              const std::function<void()> &failureAction = {});
     void handleDiscoveryResponse();
     void startInitialServerDiscovery();
+    void acquireMulticastLock();
     bool sendDiscoveryDatagrams();
-    void probeDiscoveryUrl(const QUrl &url);
+    void probeDiscoveryUrl(const QUrl &url, bool networkScan = false);
     void startHttpDiscovery();
+    void startNetworkScan();
+    void launchNextNetworkScanProbe();
     void clearDiscoveredServers(bool keepSelectedServer);
     void addDiscoveredServer(const QJsonObject &object, const QString &fallbackUrl = {});
     void resolveServerName(int index, const QString &host);
     void checkSelectedServer();
+    void checkKnownServers();
+    void finishKnownServerCheck();
+    void activateServer(int index);
     void loadSavedServer();
+    void saveKnownServers();
     void saveSelectedServer();
     void setServerActive(bool active);
     void updateServerName(const QString &serverName, const QString &serverUrl);
@@ -83,14 +105,24 @@ private:
     QTimer m_serverCheckTimer;
     QUdpSocket m_discoverySocket;
     QSet<QString> m_pendingDiscoveryUrls;
+    QQueue<QUrl> m_networkScanQueue;
     QVariantList m_servers;
     int m_selectedServerIndex = -1;
     int m_missedServerChecks = 0;
     bool m_serverCheckInFlight = false;
+    bool m_knownServerCheckInFlight = false;
     bool m_latestRequestInFlight = false;
     bool m_serverActive = false;
+    bool m_discoveryInProgress = false;
+    int m_networkScanPending = 0;
+    int m_networkScanCompleted = 0;
+    int m_networkScanTotal = 0;
+    int m_knownServerCheckPending = 0;
     QString m_serverUrl;
     QString m_serverName;
     QString m_token;
     QString m_status = QStringLiteral("Ready");
+#ifdef Q_OS_ANDROID
+    QJniObject m_multicastLock;
+#endif
 };

@@ -65,6 +65,12 @@ ApplicationWindow {
                 onToggled: androidServer.autoPublish = checked
                 Layout.fillWidth: true
             }
+
+            CheckBox {
+                text: "Is Master"
+                checked: androidServer.masterServer
+                onToggled: androidServer.masterServer = checked
+            }
         }
 
         RowLayout {

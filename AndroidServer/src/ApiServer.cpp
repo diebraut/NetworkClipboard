@@ -158,6 +158,11 @@ quint16 ApiServer::port() const
     return m_server.serverPort();
 }
 
+void ApiServer::setMasterServer(bool masterServer)
+{
+    m_masterServer = masterServer;
+}
+
 QStringList ApiServer::serverUrls() const
 {
     return localServerUrls(m_server.serverPort());
@@ -322,6 +327,7 @@ QJsonObject ApiServer::discoveryResponse(const QStringList &urls) const
         {QStringLiteral("url"), urls.value(0)},
         {QStringLiteral("urls"), urlArray},
         {QStringLiteral("token"), m_token},
+        {QStringLiteral("isMaster"), m_masterServer},
         {QStringLiteral("agentActive"), true}
     };
 }

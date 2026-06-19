@@ -11,10 +11,14 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.provider.Settings;
 import android.util.Log;
 
 import org.json.JSONArray;
@@ -46,6 +50,7 @@ public class NetworkClipboardForegroundService extends Service
     private static final int API_PORT = 8787;
     private static final int DISCOVERY_PORT = 8788;
     private static final String DISCOVERY_REQUEST = "NETWORK_CLIPBOARD_DISCOVER_V1";
+    private static final String SETTINGS_NAME = "network_clipboard_server";
 
     private static volatile NetworkClipboardForegroundService instance;
 
@@ -54,12 +59,14 @@ public class NetworkClipboardForegroundService extends Service
     private volatile boolean running;
     private volatile String token = "";
     private volatile String deviceName = "Android Server";
+    private volatile boolean isMaster;
     private JSONObject latestEntry;
     private ServerSocket serverSocket;
     private DatagramSocket discoverySocket;
     private PowerManager.WakeLock wakeLock;
+    private WifiManager.WifiLock wifiLock;
 
-    public static void start(Context context, String token, String deviceName)
+    public static void start(Context context, String token, String deviceName, boolean isMaster)
     {
         if (Build.VERSION.SDK_INT >= 33
             && context instanceof Activity
@@ -69,9 +76,12 @@ public class NetworkClipboardForegroundService extends Service
                 new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1002);
         }
 
+        requestBatteryOptimizationExemption(context);
+
         Intent intent = new Intent(context, NetworkClipboardForegroundService.class);
         intent.putExtra("token", token);
         intent.putExtra("deviceName", deviceName);
+        intent.putExtra("isMaster", isMaster);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             context.startForegroundService(intent);
         else
@@ -97,23 +107,38 @@ public class NetworkClipboardForegroundService extends Service
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, createNotification());
         acquireWakeLock();
+        acquireWifiLock();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId)
     {
+        SharedPreferences settings = getSharedPreferences(SETTINGS_NAME, MODE_PRIVATE);
         if (intent != null) {
             String newToken = intent.getStringExtra("token");
             String newDeviceName = intent.getStringExtra("deviceName");
-            if (newToken != null && !newToken.isEmpty())
+            boolean newIsMaster = intent.getBooleanExtra("isMaster", false);
+            if (newToken != null && !newToken.isEmpty()) {
                 token = newToken;
-            if (newDeviceName != null && !newDeviceName.isEmpty())
+                settings.edit().putString("token", token).apply();
+            }
+            if (newDeviceName != null && !newDeviceName.isEmpty()) {
                 deviceName = newDeviceName;
+                settings.edit().putString("deviceName", deviceName).apply();
+            }
+            isMaster = newIsMaster;
+            settings.edit().putBoolean("isMaster", isMaster).apply();
         }
+        if (token.isEmpty())
+            token = settings.getString("token", "");
+        if ("Android Server".equals(deviceName))
+            deviceName = settings.getString("deviceName", "Android-Server");
+        if (intent == null)
+            isMaster = settings.getBoolean("isMaster", false);
 
         if (!running)
             startServers();
-        return START_NOT_STICKY;
+        return START_STICKY;
     }
 
     @Override
@@ -124,6 +149,9 @@ public class NetworkClipboardForegroundService extends Service
         if (wakeLock != null && wakeLock.isHeld())
             wakeLock.release();
         wakeLock = null;
+        if (wifiLock != null && wifiLock.isHeld())
+            wifiLock.release();
+        wifiLock = null;
         instance = null;
         super.onDestroy();
     }
@@ -338,6 +366,7 @@ public class NetworkClipboardForegroundService extends Service
             .put("url", urls.length() > 0 ? urls.getString(0) : "http://127.0.0.1:8787")
             .put("urls", urls)
             .put("token", token)
+            .put("isMaster", isMaster)
             .put("agentActive", true);
     }
 
@@ -439,5 +468,36 @@ public class NetworkClipboardForegroundService extends Service
             PowerManager.PARTIAL_WAKE_LOCK, getPackageName() + ":ClipboardServer");
         wakeLock.setReferenceCounted(false);
         wakeLock.acquire();
+    }
+
+    private void acquireWifiLock()
+    {
+        WifiManager manager =
+            (WifiManager)getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        if (manager == null)
+            return;
+        wifiLock = manager.createWifiLock(
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+            getPackageName() + ":ClipboardServerWifi");
+        wifiLock.setReferenceCounted(false);
+        wifiLock.acquire();
+    }
+
+    private static void requestBatteryOptimizationExemption(Context context)
+    {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || !(context instanceof Activity))
+            return;
+
+        PowerManager manager = (PowerManager)context.getSystemService(Context.POWER_SERVICE);
+        if (manager.isIgnoringBatteryOptimizations(context.getPackageName()))
+            return;
+
+        try {
+            Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            intent.setData(Uri.parse("package:" + context.getPackageName()));
+            context.startActivity(intent);
+        } catch (Exception exception) {
+            Log.w(LOG_TAG, "Battery optimization settings could not be opened", exception);
+        }
     }
 }
