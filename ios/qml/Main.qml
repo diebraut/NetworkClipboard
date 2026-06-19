@@ -252,7 +252,13 @@ ApplicationWindow {
             }
 
             Button {
-                text: "Suchen"
+                Layout.preferredWidth: 112
+                text: networkClipboard.discoveryInProgress
+                    ? (networkClipboard.discoveryTotal > 0
+                        ? networkClipboard.discoveryCompleted + " / " + networkClipboard.discoveryTotal
+                        : "Suche...")
+                    : "Suchen"
+                enabled: !networkClipboard.discoveryInProgress
                 onClicked: networkClipboard.discoverServer()
             }
         }
