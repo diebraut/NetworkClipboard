@@ -186,28 +186,47 @@ public class NetworkClipboardForegroundService extends Service
 
     private void runDiscoveryServer()
     {
-        try {
-            discoverySocket = new DatagramSocket(null);
-            discoverySocket.setReuseAddress(true);
-            discoverySocket.bind(new java.net.InetSocketAddress(DISCOVERY_PORT));
+        while (running) {
+            try {
+                discoverySocket = new DatagramSocket(null);
+                discoverySocket.setReuseAddress(true);
+                discoverySocket.setBroadcast(true);
+                discoverySocket.bind(new java.net.InetSocketAddress(
+                    InetAddress.getByName("0.0.0.0"), DISCOVERY_PORT));
+                Log.i(LOG_TAG, "UDP discovery listening on port " + DISCOVERY_PORT);
 
-            byte[] buffer = new byte[2048];
-            while (running) {
-                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-                discoverySocket.receive(packet);
-                String request = new String(packet.getData(), 0, packet.getLength(),
-                                            StandardCharsets.UTF_8).trim();
-                if (!DISCOVERY_REQUEST.equals(request))
-                    continue;
+                byte[] buffer = new byte[2048];
+                while (running) {
+                    DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                    discoverySocket.receive(packet);
+                    String request = new String(packet.getData(), 0, packet.getLength(),
+                                                StandardCharsets.UTF_8).trim();
+                    if (!DISCOVERY_REQUEST.equals(request))
+                        continue;
 
-                byte[] response = discoveryResponse().toString()
-                    .getBytes(StandardCharsets.UTF_8);
-                discoverySocket.send(new DatagramPacket(
-                    response, response.length, packet.getAddress(), packet.getPort()));
+                    byte[] response = discoveryResponse().toString()
+                        .getBytes(StandardCharsets.UTF_8);
+                    discoverySocket.send(new DatagramPacket(
+                        response, response.length, packet.getAddress(), packet.getPort()));
+                    Log.d(LOG_TAG, "Discovery response sent to "
+                        + packet.getAddress().getHostAddress() + ":" + packet.getPort());
+                }
+            } catch (Exception exception) {
+                if (running)
+                    Log.e(LOG_TAG, "Discovery server stopped; restarting", exception);
+            } finally {
+                if (discoverySocket != null)
+                    discoverySocket.close();
+                discoverySocket = null;
             }
-        } catch (Exception exception) {
-            if (running)
-                Log.e(LOG_TAG, "Discovery server stopped", exception);
+
+            if (running) {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            }
         }
     }
 
@@ -362,6 +381,8 @@ public class NetworkClipboardForegroundService extends Service
 
         return new JSONObject()
             .put("service", "NetworkClipboard")
+            .put("protocolVersion", 1)
+            .put("platform", "android")
             .put("serverName", deviceName)
             .put("url", urls.length() > 0 ? urls.getString(0) : "http://127.0.0.1:8787")
             .put("urls", urls)
