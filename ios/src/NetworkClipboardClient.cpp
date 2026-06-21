@@ -253,6 +253,8 @@ void NetworkClipboardClient::discoverServer()
         return;
     }
     m_discoveryInProgress = true;
+    m_networkScanQueue.clear();
+    m_networkScanPending = 0;
     m_networkScanCompleted = 0;
     m_networkScanTotal = 0;
     emit discoveryProgressChanged();
@@ -264,15 +266,7 @@ void NetworkClipboardClient::discoverServer()
     QTimer::singleShot(900, this, [this]() { sendDiscoveryDatagrams(); });
 
     startHttpDiscovery();
-    QTimer::singleShot(2200, this, [this]() {
-        if (!m_discoveryInProgress)
-            return;
-
-        m_discoveryInProgress = false;
-        emit discoveryProgressChanged();
-        setStatus(QStringLiteral("Serversuche abgeschlossen: %1 Server bekannt.").arg(m_servers.size()));
-        QTimer::singleShot(0, this, &NetworkClipboardClient::checkKnownServers);
-    });
+    QTimer::singleShot(1200, this, &NetworkClipboardClient::startNetworkScan);
 }
 
 void NetworkClipboardClient::connectToServerUrl(const QString &serverUrl)
@@ -515,28 +509,38 @@ void NetworkClipboardClient::handleDiscoveryResponse()
 
 void NetworkClipboardClient::startInitialServerDiscovery()
 {
-    if (m_servers.isEmpty()) {
+    if (m_servers.isEmpty())
         setStatus(QStringLiteral("Suche Clipboard-Server..."));
-        sendDiscoveryDatagrams();
-        QTimer::singleShot(400, this, [this]() { sendDiscoveryDatagrams(); });
-        QTimer::singleShot(900, this, [this]() { sendDiscoveryDatagrams(); });
-    } else {
+
+    sendDiscoveryDatagrams();
+    QTimer::singleShot(400, this, [this]() { sendDiscoveryDatagrams(); });
+    QTimer::singleShot(900, this, [this]() { sendDiscoveryDatagrams(); });
+
+    if (!m_servers.isEmpty())
         checkKnownServers();
-    }
+
+    m_discoveryInProgress = true;
+    m_networkScanQueue.clear();
+    m_networkScanPending = 0;
+    m_networkScanCompleted = 0;
+    m_networkScanTotal = 0;
+    emit discoveryProgressChanged();
+    startHttpDiscovery();
+    QTimer::singleShot(1200, this, &NetworkClipboardClient::startNetworkScan);
 }
 
-void NetworkClipboardClient::probeDiscoveryUrl(const QUrl &url)
+void NetworkClipboardClient::probeDiscoveryUrl(const QUrl &url, bool networkScan)
 {
     const QString urlString = url.toString();
     m_pendingDiscoveryUrls.insert(urlString);
 
     QNetworkReply *reply = m_network.get(QNetworkRequest(url));
-    QTimer::singleShot(1500, reply, [reply]() {
+    QTimer::singleShot(networkScan ? 700 : 1500, reply, [reply]() {
         if (reply->isRunning())
             reply->abort();
     });
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, urlString]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, urlString, networkScan]() {
         m_pendingDiscoveryUrls.remove(urlString);
 
         if (reply->error() == QNetworkReply::NoError) {
@@ -546,7 +550,12 @@ void NetworkClipboardClient::probeDiscoveryUrl(const QUrl &url)
             }
         }
 
-        if (m_pendingDiscoveryUrls.isEmpty() && m_status.startsWith(QStringLiteral("Suche Clipboard-Server"))) {
+        if (networkScan) {
+            --m_networkScanPending;
+            ++m_networkScanCompleted;
+            emit discoveryProgressChanged();
+            launchNextNetworkScanProbe();
+        } else if (m_pendingDiscoveryUrls.isEmpty() && m_status.startsWith(QStringLiteral("Suche Clipboard-Server"))) {
             if (m_servers.isEmpty()) {
                 setStatus(QStringLiteral("Kein Clipboard-Server gefunden."));
             } else if (m_serverActive && !m_serverName.isEmpty()) {
@@ -567,6 +576,77 @@ void NetworkClipboardClient::startHttpDiscovery()
         const QString serverUrl = serverValue.toMap().value(QStringLiteral("url")).toString();
         if (!serverUrl.isEmpty())
             probeDiscoveryUrl(QUrl(serverUrl + QStringLiteral("/api/discovery")));
+    }
+}
+
+void NetworkClipboardClient::startNetworkScan()
+{
+    QSet<QString> prefixes;
+    const auto interfaces = QNetworkInterface::allInterfaces();
+    for (const QNetworkInterface &networkInterface : interfaces) {
+        const auto flags = networkInterface.flags();
+        if (!flags.testFlag(QNetworkInterface::IsUp)
+            || !flags.testFlag(QNetworkInterface::IsRunning)
+            || flags.testFlag(QNetworkInterface::IsLoopBack)) {
+            continue;
+        }
+
+        for (const QNetworkAddressEntry &entry : networkInterface.addressEntries()) {
+            const QHostAddress address = entry.ip();
+            if (address.protocol() != QAbstractSocket::IPv4Protocol || address.isLoopback())
+                continue;
+
+            const QStringList parts = address.toString().split(QLatin1Char('.'));
+            if (parts.size() == 4) {
+                prefixes.insert(parts.at(0) + QLatin1Char('.')
+                                + parts.at(1) + QLatin1Char('.')
+                                + parts.at(2) + QLatin1Char('.'));
+            }
+        }
+    }
+
+    QSet<QString> knownUrls;
+    for (const QVariant &serverValue : std::as_const(m_servers))
+        knownUrls.insert(serverValue.toMap().value(QStringLiteral("url")).toString());
+
+    for (const QString &prefix : std::as_const(prefixes)) {
+        for (int host = 1; host < 255; ++host) {
+            const QUrl url(QStringLiteral("http://%1%2:%3/api/discovery")
+                               .arg(prefix)
+                               .arg(host)
+                               .arg(ApiPort));
+            if (!knownUrls.contains(endpointServerUrl(url)))
+                m_networkScanQueue.enqueue(url);
+        }
+    }
+
+    m_networkScanTotal = m_networkScanQueue.size();
+    emit discoveryProgressChanged();
+    if (m_networkScanTotal == 0) {
+        m_discoveryInProgress = false;
+        emit discoveryProgressChanged();
+        setStatus(QStringLiteral("Serversuche abgeschlossen."));
+        QTimer::singleShot(0, this, &NetworkClipboardClient::checkKnownServers);
+        return;
+    }
+
+    setStatus(QStringLiteral("Suche Server im lokalen Netzwerk..."));
+    launchNextNetworkScanProbe();
+}
+
+void NetworkClipboardClient::launchNextNetworkScanProbe()
+{
+    constexpr int MaxConcurrentProbes = 24;
+    while (m_networkScanPending < MaxConcurrentProbes && !m_networkScanQueue.isEmpty()) {
+        ++m_networkScanPending;
+        probeDiscoveryUrl(m_networkScanQueue.dequeue(), true);
+    }
+
+    if (m_networkScanQueue.isEmpty() && m_networkScanPending == 0) {
+        m_discoveryInProgress = false;
+        emit discoveryProgressChanged();
+        setStatus(QStringLiteral("Serversuche abgeschlossen: %1 Server bekannt.").arg(m_servers.size()));
+        QTimer::singleShot(0, this, &NetworkClipboardClient::checkKnownServers);
     }
 }
 
@@ -640,18 +720,19 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object, cons
         const QString existingUrl = existing.value(QStringLiteral("url")).toString();
         const QString existingToken = existing.value(QStringLiteral("token")).toString();
         const bool sameUrl = existingUrl == url;
-        const bool sameToken = !discoveredToken.isEmpty()
+        const bool sameTokenAndName = !discoveredToken.isEmpty()
             && !existingToken.isEmpty()
-            && discoveredToken == existingToken;
+            && discoveredToken == existingToken
+            && existing.value(QStringLiteral("name")).toString() == name;
         const bool tokensCompatible = existingToken.isEmpty()
             || discoveredToken.isEmpty()
-            || sameToken;
+            || discoveredToken == existingToken;
         const bool staleServerWithSameName = !existing.value(QStringLiteral("active")).toBool()
             && !name.isEmpty()
             && inactiveServersWithSameName == 1
             && tokensCompatible
             && existing.value(QStringLiteral("name")).toString() == name;
-        if (sameUrl || sameToken || staleServerWithSameName) {
+        if (sameUrl || sameTokenAndName || staleServerWithSameName) {
             const QString existingName = existing.value(QStringLiteral("name")).toString();
             const QString preferredUrl = sameUrl ? existingUrl : url;
             const bool shouldSelectServer = m_selectedServerIndex == -1
@@ -902,6 +983,7 @@ void NetworkClipboardClient::finishKnownServerCheck()
     m_knownServerCheckInFlight = false;
     emit serversChanged();
     saveKnownServers();
+    sendDiscoveryDatagrams();
 
     int mainServerIndex = -1;
     int firstActiveIndex = -1;
@@ -928,10 +1010,7 @@ void NetworkClipboardClient::finishKnownServerCheck()
 
     if (targetIndex >= 0) {
         activateServer(targetIndex);
-        if (mainServerIndex < 0)
-            sendDiscoveryDatagrams();
     } else {
-        sendDiscoveryDatagrams();
         setServerActive(false);
         setStatus(QStringLiteral("Kein bekannter Server erreichbar."));
     }

@@ -2,6 +2,7 @@
 
 #include <QNetworkAccessManager>
 #include <QObject>
+#include <QQueue>
 #include <QSet>
 #include <QString>
 #include <QTimer>
@@ -76,8 +77,10 @@ private:
     void handleDiscoveryResponse();
     void startInitialServerDiscovery();
     bool sendDiscoveryDatagrams();
-    void probeDiscoveryUrl(const QUrl &url);
+    void probeDiscoveryUrl(const QUrl &url, bool networkScan = false);
     void startHttpDiscovery();
+    void startNetworkScan();
+    void launchNextNetworkScanProbe();
     void clearDiscoveredServers(bool keepSelectedServer);
     void addDiscoveredServer(const QJsonObject &object, const QString &fallbackUrl = {});
     void resolveServerName(int index, const QString &host);
@@ -96,6 +99,7 @@ private:
     QTimer m_serverCheckTimer;
     QUdpSocket m_discoverySocket;
     QSet<QString> m_pendingDiscoveryUrls;
+    QQueue<QUrl> m_networkScanQueue;
     QVariantList m_servers;
     int m_selectedServerIndex = -1;
     int m_missedServerChecks = 0;
@@ -105,6 +109,7 @@ private:
     bool m_serverActive = false;
     bool m_manualServerSelection = false;
     bool m_discoveryInProgress = false;
+    int m_networkScanPending = 0;
     int m_networkScanCompleted = 0;
     int m_networkScanTotal = 0;
     int m_knownServerCheckPending = 0;

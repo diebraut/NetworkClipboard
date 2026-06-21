@@ -813,18 +813,19 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object, cons
         const QString existingUrl = existing.value(QStringLiteral("url")).toString();
         const QString existingToken = existing.value(QStringLiteral("token")).toString();
         const bool sameUrl = existingUrl == url;
-        const bool sameToken = !discoveredToken.isEmpty()
+        const bool sameTokenAndName = !discoveredToken.isEmpty()
             && !existingToken.isEmpty()
-            && discoveredToken == existingToken;
+            && discoveredToken == existingToken
+            && existing.value(QStringLiteral("name")).toString() == name;
         const bool tokensCompatible = existingToken.isEmpty()
             || discoveredToken.isEmpty()
-            || sameToken;
+            || discoveredToken == existingToken;
         const bool staleServerWithSameName = !existing.value(QStringLiteral("active")).toBool()
             && !name.isEmpty()
             && inactiveServersWithSameName == 1
             && tokensCompatible
             && existing.value(QStringLiteral("name")).toString() == name;
-        if (sameUrl || sameToken || staleServerWithSameName) {
+        if (sameUrl || sameTokenAndName || staleServerWithSameName) {
             const QString existingName = existing.value(QStringLiteral("name")).toString();
             QString preferredUrl = existingUrl;
             if (!sameUrl) {
@@ -1056,11 +1057,13 @@ void NetworkClipboardClient::loadSavedServer()
     for (const QVariant &serverValue : std::as_const(m_servers)) {
         const QVariantMap server = serverValue.toMap();
         const QString token = server.value(QStringLiteral("token")).toString();
+        const QString name = server.value(QStringLiteral("name")).toString();
         int duplicateIndex = -1;
         for (int i = 0; i < uniqueServers.size(); ++i) {
             const QVariantMap existing = uniqueServers.at(i).toMap();
             if (!token.isEmpty()
-                && existing.value(QStringLiteral("token")).toString() == token) {
+                && existing.value(QStringLiteral("token")).toString() == token
+                && existing.value(QStringLiteral("name")).toString() == name) {
                 duplicateIndex = i;
                 break;
             }

@@ -65,6 +65,7 @@ public class NetworkClipboardForegroundService extends Service
     private DatagramSocket discoverySocket;
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
+    private WifiManager.MulticastLock multicastLock;
 
     public static void start(Context context, String token, String deviceName, boolean isMaster)
     {
@@ -108,6 +109,7 @@ public class NetworkClipboardForegroundService extends Service
         startForeground(NOTIFICATION_ID, createNotification());
         acquireWakeLock();
         acquireWifiLock();
+        acquireMulticastLock();
     }
 
     @Override
@@ -152,6 +154,9 @@ public class NetworkClipboardForegroundService extends Service
         if (wifiLock != null && wifiLock.isHeld())
             wifiLock.release();
         wifiLock = null;
+        if (multicastLock != null && multicastLock.isHeld())
+            multicastLock.release();
+        multicastLock = null;
         instance = null;
         super.onDestroy();
     }
@@ -502,6 +507,18 @@ public class NetworkClipboardForegroundService extends Service
             getPackageName() + ":ClipboardServerWifi");
         wifiLock.setReferenceCounted(false);
         wifiLock.acquire();
+    }
+
+    private void acquireMulticastLock()
+    {
+        WifiManager manager =
+            (WifiManager)getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        if (manager == null)
+            return;
+        multicastLock = manager.createMulticastLock(
+            getPackageName() + ":ClipboardServerDiscovery");
+        multicastLock.setReferenceCounted(false);
+        multicastLock.acquire();
     }
 
     private static void requestBatteryOptimizationExemption(Context context)
