@@ -2,6 +2,7 @@
 
 #include <QAbstractSocket>
 #include <QDateTime>
+#include <QDebug>
 #include <QHostInfo>
 #include <QHostAddress>
 #include <QJsonArray>
@@ -336,6 +337,13 @@ void NetworkClipboardClient::connectToServerUrl(const QString &serverUrl)
 
 bool NetworkClipboardClient::sendDiscoveryDatagrams()
 {
+    if (m_discoverySocket.state() == QAbstractSocket::UnconnectedState
+        && !m_discoverySocket.bind(QHostAddress::AnyIPv4, 0)) {
+        qWarning() << "NetworkClipboardIOS: could not bind UDP discovery socket:"
+                   << m_discoverySocket.errorString();
+        return false;
+    }
+
     bool wroteDatagram = m_discoverySocket.writeDatagram(DiscoveryRequest, QHostAddress::Broadcast, DiscoveryPort) >= 0;
 
     const auto interfaces = QNetworkInterface::allInterfaces();
@@ -356,6 +364,11 @@ bool NetworkClipboardClient::sendDiscoveryDatagrams()
             wroteDatagram = m_discoverySocket.writeDatagram(DiscoveryRequest, broadcast, DiscoveryPort) >= 0
                 || wroteDatagram;
         }
+    }
+
+    if (!wroteDatagram) {
+        qWarning() << "NetworkClipboardIOS: could not send UDP discovery datagram:"
+                   << m_discoverySocket.errorString();
     }
 
     return wroteDatagram;
@@ -611,16 +624,34 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object, cons
     const bool hasAgentStatus = object.contains(QStringLiteral("agentActive"));
     const bool serverAvailable = !hasAgentStatus || object.value(QStringLiteral("agentActive")).toBool(false);
 
+    int inactiveServersWithSameName = 0;
+    if (!name.isEmpty()) {
+        for (const QVariant &serverValue : std::as_const(m_servers)) {
+            const QVariantMap server = serverValue.toMap();
+            if (!server.value(QStringLiteral("active")).toBool()
+                && server.value(QStringLiteral("name")).toString() == name) {
+                ++inactiveServersWithSameName;
+            }
+        }
+    }
+
     for (int i = 0; i < m_servers.size(); ++i) {
         QVariantMap existing = m_servers.at(i).toMap();
         const QString existingUrl = existing.value(QStringLiteral("url")).toString();
         const QString existingToken = existing.value(QStringLiteral("token")).toString();
         const bool sameUrl = existingUrl == url;
-        const bool sameServer = !discoveredToken.isEmpty()
+        const bool sameToken = !discoveredToken.isEmpty()
             && !existingToken.isEmpty()
-            && discoveredToken == existingToken
+            && discoveredToken == existingToken;
+        const bool tokensCompatible = existingToken.isEmpty()
+            || discoveredToken.isEmpty()
+            || sameToken;
+        const bool staleServerWithSameName = !existing.value(QStringLiteral("active")).toBool()
+            && !name.isEmpty()
+            && inactiveServersWithSameName == 1
+            && tokensCompatible
             && existing.value(QStringLiteral("name")).toString() == name;
-        if (sameUrl || sameServer) {
+        if (sameUrl || sameToken || staleServerWithSameName) {
             const QString existingName = existing.value(QStringLiteral("name")).toString();
             const QString preferredUrl = sameUrl ? existingUrl : url;
             const bool shouldSelectServer = m_selectedServerIndex == -1

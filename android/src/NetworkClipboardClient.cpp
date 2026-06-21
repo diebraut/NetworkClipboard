@@ -797,16 +797,34 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object, cons
     const bool hasAgentStatus = object.contains(QStringLiteral("agentActive"));
     const bool serverAvailable = !hasAgentStatus || object.value(QStringLiteral("agentActive")).toBool(false);
 
+    int inactiveServersWithSameName = 0;
+    if (!name.isEmpty()) {
+        for (const QVariant &serverValue : std::as_const(m_servers)) {
+            const QVariantMap server = serverValue.toMap();
+            if (!server.value(QStringLiteral("active")).toBool()
+                && server.value(QStringLiteral("name")).toString() == name) {
+                ++inactiveServersWithSameName;
+            }
+        }
+    }
+
     for (int i = 0; i < m_servers.size(); ++i) {
         QVariantMap existing = m_servers.at(i).toMap();
         const QString existingUrl = existing.value(QStringLiteral("url")).toString();
         const QString existingToken = existing.value(QStringLiteral("token")).toString();
         const bool sameUrl = existingUrl == url;
-        const bool sameServer = !discoveredToken.isEmpty()
+        const bool sameToken = !discoveredToken.isEmpty()
             && !existingToken.isEmpty()
-            && discoveredToken == existingToken
+            && discoveredToken == existingToken;
+        const bool tokensCompatible = existingToken.isEmpty()
+            || discoveredToken.isEmpty()
+            || sameToken;
+        const bool staleServerWithSameName = !existing.value(QStringLiteral("active")).toBool()
+            && !name.isEmpty()
+            && inactiveServersWithSameName == 1
+            && tokensCompatible
             && existing.value(QStringLiteral("name")).toString() == name;
-        if (sameUrl || sameServer) {
+        if (sameUrl || sameToken || staleServerWithSameName) {
             const QString existingName = existing.value(QStringLiteral("name")).toString();
             QString preferredUrl = existingUrl;
             if (!sameUrl) {
@@ -1038,13 +1056,11 @@ void NetworkClipboardClient::loadSavedServer()
     for (const QVariant &serverValue : std::as_const(m_servers)) {
         const QVariantMap server = serverValue.toMap();
         const QString token = server.value(QStringLiteral("token")).toString();
-        const QString name = server.value(QStringLiteral("name")).toString();
         int duplicateIndex = -1;
         for (int i = 0; i < uniqueServers.size(); ++i) {
             const QVariantMap existing = uniqueServers.at(i).toMap();
             if (!token.isEmpty()
-                && existing.value(QStringLiteral("token")).toString() == token
-                && existing.value(QStringLiteral("name")).toString() == name) {
+                && existing.value(QStringLiteral("token")).toString() == token) {
                 duplicateIndex = i;
                 break;
             }
