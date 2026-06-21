@@ -50,7 +50,12 @@ int main(int argc, char *argv[])
         settings.setValue(QStringLiteral("server/token"), token);
     }
 
-    const QUrl serverUrl(settings.value(QStringLiteral("server/url"), QStringLiteral("http://127.0.0.1:%1").arg(port)).toString());
+    const QString localServiceUrl = QStringLiteral("http://127.0.0.1:%1").arg(port);
+    const QUrl serverUrl(hasServiceConfig
+                             ? localServiceUrl
+                             : settings.value(QStringLiteral("server/url"), localServiceUrl).toString());
+    if (hasServiceConfig)
+        settings.setValue(QStringLiteral("server/url"), localServiceUrl);
 
     QString deviceId = settings.value(QStringLiteral("device/id")).toString();
     if (deviceId.isEmpty()) {

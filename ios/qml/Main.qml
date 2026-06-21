@@ -14,6 +14,7 @@ ApplicationWindow {
     property string rawPreviewText: ""
     property bool forceNextNetworkText: false
     property bool waitingForServerText: false
+    readonly property bool compactLayout: width < 520
 
     function deviceName() {
         return Qt.platform.os === "ios" ? "iPhone" : "Android"
@@ -181,8 +182,8 @@ ApplicationWindow {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 20
-        spacing: 12
+        anchors.margins: root.compactLayout ? 12 : 20
+        spacing: root.compactLayout ? 8 : 12
 
         Label {
             text: "Network Clipboard"
@@ -191,75 +192,107 @@ ApplicationWindow {
             Layout.fillWidth: true
         }
 
-        Label {
-            text: "Clipboard-Server"
+        Item {
+            id: serverFieldset
             Layout.fillWidth: true
-            font.pixelSize: 13
-            color: "#6b7280"
-        }
+            Layout.preferredHeight: serverControls.implicitHeight + 28
 
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 8
-            ComboBox {
-                id: serverBox
-                Layout.fillWidth: true
-                model: networkClipboard.servers
-                textRole: "name"
-                currentIndex: networkClipboard.selectedServerIndex
-                enabled: networkClipboard.servers.length > 0
-                editable: false
-                onActivated: function(index) {
-                    networkClipboard.selectServer(index)
-                }
+            Rectangle {
+                id: serverBoxFrame
+                anchors.fill: parent
+                anchors.topMargin: Math.round(serverFieldsetTitle.implicitHeight / 2)
+                color: "transparent"
+                border.color: "#9ca3af"
+                border.width: 1
+                radius: 2
 
-                contentItem: Item {
-                    implicitHeight: serverText.implicitHeight
+                GridLayout {
+                    id: serverControls
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    anchors.topMargin: 14
+                columns: root.compactLayout ? 1 : 2
+                columnSpacing: 8
+                rowSpacing: 4
 
-                    Text {
-                        id: serverText
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        leftPadding: 12
-                        rightPadding: serverBox.indicator.width + serverBox.spacing + 8
-                        width: parent.width
-                        verticalAlignment: Text.AlignVCenter
-                        elide: Text.ElideRight
-                        textFormat: Text.RichText
-                        text: serverListText(
-                            networkClipboard.serverName,
-                            networkClipboard.selectedServerMain,
-                            networkClipboard.serverActive)
-                    }
-                }
-
-                delegate: ItemDelegate {
-                    width: serverBox.width
-                    highlighted: serverBox.highlightedIndex === index
-                    contentItem: Text {
-                        textFormat: Text.RichText
-                        text: serverListText(modelData.name, modelData.main, modelData.active)
-                        elide: Text.ElideRight
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                    onClicked: {
-                        serverBox.currentIndex = index
+                ComboBox {
+                    id: serverBox
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    model: networkClipboard.servers
+                    textRole: "name"
+                    currentIndex: networkClipboard.selectedServerIndex
+                    enabled: networkClipboard.manualServerSelection
+                        && networkClipboard.servers.length > 0
+                    editable: false
+                    onActivated: function(index) {
                         networkClipboard.selectServer(index)
-                        serverBox.popup.close()
                     }
+
+                    contentItem: Item {
+                        implicitHeight: serverText.implicitHeight
+
+                        Text {
+                            id: serverText
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            leftPadding: 12
+                            rightPadding: serverBox.indicator.width + serverBox.spacing + 8
+                            width: parent.width
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideRight
+                            textFormat: Text.RichText
+                            text: serverListText(
+                                networkClipboard.serverName,
+                                networkClipboard.selectedServerMain,
+                                networkClipboard.serverActive)
+                        }
+                    }
+
+                    delegate: ItemDelegate {
+                        width: serverBox.width
+                        enabled: networkClipboard.manualServerSelection && modelData.active
+                        highlighted: serverBox.highlightedIndex === index
+                        contentItem: Text {
+                            textFormat: Text.RichText
+                            text: serverListText(modelData.name, modelData.main, modelData.active)
+                            elide: Text.ElideRight
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        onClicked: {
+                            serverBox.currentIndex = index
+                            networkClipboard.selectServer(index)
+                            serverBox.popup.close()
+                        }
+                    }
+                }
+
+                CheckBox {
+                    text: "Manuelle Serverwahl"
+                    checked: networkClipboard.manualServerSelection
+                    Layout.alignment: Qt.AlignLeft
+                    onToggled: networkClipboard.manualServerSelection = checked
                 }
             }
+            }
 
-            Button {
-                Layout.preferredWidth: 112
-                text: networkClipboard.discoveryInProgress
-                    ? (networkClipboard.discoveryTotal > 0
-                        ? networkClipboard.discoveryCompleted + " / " + networkClipboard.discoveryTotal
-                        : "Suche...")
-                    : "Suchen"
-                enabled: !networkClipboard.discoveryInProgress
-                onClicked: networkClipboard.discoverServer()
+            Rectangle {
+                anchors.left: parent.left
+                anchors.leftMargin: 12
+                anchors.verticalCenter: serverBoxFrame.top
+                width: serverFieldsetTitle.implicitWidth + 10
+                height: serverFieldsetTitle.implicitHeight
+                color: root.color
+
+                Label {
+                    id: serverFieldsetTitle
+                    anchors.centerIn: parent
+                    width: parent.width - 10
+                    text: "Clipboard-Server"
+                    font.pixelSize: 13
+                    color: "#111827"
+                }
             }
         }
 
@@ -333,6 +366,7 @@ ApplicationWindow {
         Label {
             text: networkClipboard.status
             Layout.fillWidth: true
+            wrapMode: Text.WordWrap
         }
     }
 

@@ -25,6 +25,7 @@ class NetworkClipboardClient : public QObject
     Q_PROPERTY(int selectedServerIndex READ selectedServerIndex NOTIFY selectedServerIndexChanged)
     Q_PROPERTY(bool serverActive READ serverActive NOTIFY serverActiveChanged)
     Q_PROPERTY(bool selectedServerMain READ selectedServerMain NOTIFY selectedServerMainChanged)
+    Q_PROPERTY(bool manualServerSelection READ manualServerSelection WRITE setManualServerSelection NOTIFY manualServerSelectionChanged)
     Q_PROPERTY(bool discoveryInProgress READ discoveryInProgress NOTIFY discoveryProgressChanged)
     Q_PROPERTY(int discoveryCompleted READ discoveryCompleted NOTIFY discoveryProgressChanged)
     Q_PROPERTY(int discoveryTotal READ discoveryTotal NOTIFY discoveryProgressChanged)
@@ -42,6 +43,8 @@ public:
     int selectedServerIndex() const;
     bool serverActive() const;
     bool selectedServerMain() const;
+    bool manualServerSelection() const;
+    void setManualServerSelection(bool enabled);
     bool discoveryInProgress() const;
     int discoveryCompleted() const;
     int discoveryTotal() const;
@@ -65,6 +68,7 @@ signals:
     void selectedServerIndexChanged();
     void serverActiveChanged();
     void selectedServerMainChanged();
+    void manualServerSelectionChanged();
     void discoveryProgressChanged();
     void tokenChanged();
     void statusChanged();
@@ -113,6 +117,7 @@ private:
     bool m_knownServerCheckInFlight = false;
     bool m_latestRequestInFlight = false;
     bool m_serverActive = false;
+    bool m_manualServerSelection = false;
     bool m_discoveryInProgress = false;
     int m_networkScanPending = 0;
     int m_networkScanCompleted = 0;

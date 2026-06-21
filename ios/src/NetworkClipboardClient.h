@@ -2,7 +2,6 @@
 
 #include <QNetworkAccessManager>
 #include <QObject>
-#include <QQueue>
 #include <QSet>
 #include <QString>
 #include <QTimer>
@@ -21,6 +20,7 @@ class NetworkClipboardClient : public QObject
     Q_PROPERTY(int selectedServerIndex READ selectedServerIndex NOTIFY selectedServerIndexChanged)
     Q_PROPERTY(bool serverActive READ serverActive NOTIFY serverActiveChanged)
     Q_PROPERTY(bool selectedServerMain READ selectedServerMain NOTIFY serversChanged)
+    Q_PROPERTY(bool manualServerSelection READ manualServerSelection WRITE setManualServerSelection NOTIFY manualServerSelectionChanged)
     Q_PROPERTY(bool discoveryInProgress READ discoveryInProgress NOTIFY discoveryProgressChanged)
     Q_PROPERTY(int discoveryCompleted READ discoveryCompleted NOTIFY discoveryProgressChanged)
     Q_PROPERTY(int discoveryTotal READ discoveryTotal NOTIFY discoveryProgressChanged)
@@ -38,6 +38,8 @@ public:
     int selectedServerIndex() const;
     bool serverActive() const;
     bool selectedServerMain() const;
+    bool manualServerSelection() const;
+    void setManualServerSelection(bool enabled);
     bool discoveryInProgress() const;
     int discoveryCompleted() const;
     int discoveryTotal() const;
@@ -60,6 +62,7 @@ signals:
     void serversChanged();
     void selectedServerIndexChanged();
     void serverActiveChanged();
+    void manualServerSelectionChanged();
     void discoveryProgressChanged();
     void tokenChanged();
     void statusChanged();
@@ -73,10 +76,8 @@ private:
     void handleDiscoveryResponse();
     void startInitialServerDiscovery();
     bool sendDiscoveryDatagrams();
-    void probeDiscoveryUrl(const QUrl &url, bool networkScan = false);
+    void probeDiscoveryUrl(const QUrl &url);
     void startHttpDiscovery();
-    void startNetworkScan();
-    void launchNextNetworkScanProbe();
     void clearDiscoveredServers(bool keepSelectedServer);
     void addDiscoveredServer(const QJsonObject &object, const QString &fallbackUrl = {});
     void resolveServerName(int index, const QString &host);
@@ -95,7 +96,6 @@ private:
     QTimer m_serverCheckTimer;
     QUdpSocket m_discoverySocket;
     QSet<QString> m_pendingDiscoveryUrls;
-    QQueue<QUrl> m_networkScanQueue;
     QVariantList m_servers;
     int m_selectedServerIndex = -1;
     int m_missedServerChecks = 0;
@@ -103,8 +103,8 @@ private:
     bool m_knownServerCheckInFlight = false;
     bool m_latestRequestInFlight = false;
     bool m_serverActive = false;
+    bool m_manualServerSelection = false;
     bool m_discoveryInProgress = false;
-    int m_networkScanPending = 0;
     int m_networkScanCompleted = 0;
     int m_networkScanTotal = 0;
     int m_knownServerCheckPending = 0;
