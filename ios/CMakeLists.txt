@@ -1,6 +1,6 @@
 ﻿cmake_minimum_required(VERSION 3.16)
 
-project(NetworkClipboardIOS VERSION 0.1 LANGUAGES CXX)
+project(NetworkClipboardIOS VERSION 0.1 LANGUAGES CXX OBJCXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,7 +13,7 @@ qt_add_executable(NetworkClipboardIOS
     src/main.cpp
     src/NetworkClipboardClient.cpp
     src/NetworkClipboardClient.h
-    src/ClipboardBridge.cpp
+    src/ClipboardBridge.mm
     src/ClipboardBridge.h
     ../icons/ios/Assets.xcassets
 )
@@ -37,6 +37,7 @@ target_link_libraries(NetworkClipboardIOS
 )
 
 if(IOS)
+    target_link_libraries(NetworkClipboardIOS PRIVATE "-framework UIKit")
     set_target_properties(NetworkClipboardIOS PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_GUI_IDENTIFIER de.localtools.networkclipboard

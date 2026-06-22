@@ -3,14 +3,18 @@
 #include "ClipboardEntry.h"
 
 #include <QDateTime>
+#include <QByteArray>
 #include <QNetworkAccessManager>
 #include <QObject>
 #include <QSystemTrayIcon>
 #include <QTimer>
 #include <QUrl>
 
+#include <optional>
+
 class QAction;
 class QClipboard;
+class QImage;
 class QMenu;
 
 class TrayController : public QObject
@@ -25,6 +29,7 @@ public:
 
 private:
     void onClipboardChanged();
+    void processClipboardChange();
     void pollLatestFromServer();
     void sendAgentHeartbeat();
     void sendCurrentClipboard();
@@ -36,6 +41,7 @@ private:
     void setMasterServer(bool isMaster);
     void sendEntryToServer(const ClipboardEntry &entry, bool showSuccessMessage);
     void publishClipboardText(const QString &text, bool showSuccessMessage, bool force = false);
+    void publishClipboardImage(const QImage &image, bool showSuccessMessage, bool force = false);
     void publishCurrentClipboardIfAvailable(bool force);
     void scheduleCurrentClipboardPublish(bool force);
     void applyNetworkEntryToClipboard(const ClipboardEntry &entry, bool showMessage, bool allowOwnEntry);
@@ -44,6 +50,7 @@ private:
     QClipboard *m_clipboard = nullptr;
     QNetworkAccessManager m_network;
     QTimer m_pollTimer;
+    QTimer m_clipboardChangeTimer;
     QSystemTrayIcon m_tray;
     QMenu *m_menu = nullptr;
     QAction *m_autoSendAction = nullptr;
@@ -59,7 +66,14 @@ private:
     bool m_serviceRunning = false;
     qint64 m_ignoreClipboardChangesUntil = 0;
     QString m_ignoredClipboardContent;
+    QByteArray m_ignoredClipboardImageHash;
     QString m_lastSeenNetworkEntryId;
     QString m_lastSeenNetworkContent;
+    QByteArray m_lastSeenNetworkImageHash;
     QString m_lastPublishedContent;
+    QByteArray m_lastPublishedImageHash;
+    bool m_sendInFlight = false;
+    std::optional<ClipboardEntry> m_pendingEntry;
+    bool m_pendingShowSuccessMessage = false;
+    quint64 m_clipboardChangeGeneration = 0;
 };

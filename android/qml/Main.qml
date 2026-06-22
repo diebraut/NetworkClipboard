@@ -13,6 +13,10 @@ ApplicationWindow {
     property string observedLocalClipboardText: ""
     property string pendingAutoSendText: ""
     property string rawPreviewText: ""
+    property string rawPreviewImageBase64: ""
+    property string observedLocalImageFingerprint: ""
+    property string lastAutoSentImageFingerprint: ""
+    property string pendingAutoSendImageFingerprint: ""
     property bool autoSendInFlight: false
     property bool forceNextNetworkText: false
     property bool waitingForServerText: false
@@ -23,6 +27,32 @@ ApplicationWindow {
     }
 
     function syncClipboardToPreview() {
+        if (localClipboard.hasImage()) {
+            const fingerprint = localClipboard.imageFingerprint()
+            if (fingerprint.length === 0 || fingerprint === observedLocalImageFingerprint)
+                return
+
+            observedLocalImageFingerprint = fingerprint
+            const base64 = localClipboard.imageBase64()
+            if (base64.length === 0)
+                return
+
+            rawPreviewText = ""
+            rawPreviewImageBase64 = base64
+            observedLocalClipboardText = ""
+            lastAutoSentText = ""
+
+            if (networkClipboard.serverActive
+                    && !waitingForServerText
+                    && !autoSendInFlight
+                    && fingerprint !== lastAutoSentImageFingerprint) {
+                pendingAutoSendImageFingerprint = fingerprint
+                autoSendInFlight = true
+                networkClipboard.sendImage(base64, fingerprint, deviceName())
+            }
+            return
+        }
+
         const text = localClipboard.text()
         if (text.trim().length === 0)
             return
@@ -31,9 +61,13 @@ ApplicationWindow {
             return
 
         observedLocalClipboardText = text
+        observedLocalImageFingerprint = ""
+        lastAutoSentImageFingerprint = ""
 
-        if (rawPreviewText !== text)
+        if (rawPreviewText !== text) {
             rawPreviewText = text
+            rawPreviewImageBase64 = ""
+        }
 
         if (networkClipboard.serverActive
                 && !waitingForServerText
@@ -162,7 +196,7 @@ ApplicationWindow {
             waitingForServerText = false
             serverReadGuardTimer.stop()
 
-            if (!forceUpdate && rawPreviewText === text)
+            if (!forceUpdate && rawPreviewText === text && rawPreviewImageBase64.length === 0)
                 return
 
             lastAutoSentText = text
@@ -170,10 +204,34 @@ ApplicationWindow {
             autoSendInFlight = false
             localClipboard.setText(text)
             rawPreviewText = text
+            rawPreviewImageBase64 = ""
+            observedLocalImageFingerprint = ""
+            lastAutoSentImageFingerprint = ""
+        }
+
+        function onLatestImageReceived(base64) {
+            forceNextNetworkText = false
+            waitingForServerText = false
+            serverReadGuardTimer.stop()
+            pendingAutoSendText = ""
+            pendingAutoSendImageFingerprint = ""
+            autoSendInFlight = false
+
+            if (!localClipboard.setImageBase64(base64))
+                return
+
+            const fingerprint = localClipboard.imageFingerprint()
+            observedLocalImageFingerprint = fingerprint
+            lastAutoSentImageFingerprint = fingerprint
+            lastAutoSentText = ""
+            observedLocalClipboardText = ""
+            rawPreviewText = ""
+            rawPreviewImageBase64 = base64
         }
 
         function onTextSent(text) {
             lastAutoSentText = text
+            lastAutoSentImageFingerprint = ""
             if (pendingAutoSendText === text)
                 pendingAutoSendText = ""
             autoSendInFlight = false
@@ -182,6 +240,20 @@ ApplicationWindow {
         function onTextSendFailed(text) {
             if (pendingAutoSendText === text)
                 pendingAutoSendText = ""
+            autoSendInFlight = false
+        }
+
+        function onImageSent(fingerprint) {
+            lastAutoSentImageFingerprint = fingerprint
+            lastAutoSentText = ""
+            if (pendingAutoSendImageFingerprint === fingerprint)
+                pendingAutoSendImageFingerprint = ""
+            autoSendInFlight = false
+        }
+
+        function onImageSendFailed(fingerprint) {
+            if (pendingAutoSendImageFingerprint === fingerprint)
+                pendingAutoSendImageFingerprint = ""
             autoSendInFlight = false
         }
 
@@ -196,6 +268,7 @@ ApplicationWindow {
                 forceNextNetworkText = false
                 waitingForServerText = false
                 pendingAutoSendText = ""
+                pendingAutoSendImageFingerprint = ""
                 autoSendInFlight = false
             }
         }
@@ -329,9 +402,11 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            property string fieldsetTitle: networkClipboard.serverActive
-                ? "Inhalt Netz-Zwischenablage"
-                : "Letzte bekannte Netz-Zwischenablage"
+            property string fieldsetTitle: rawPreviewImageBase64.length > 0
+                ? "Bild Netz-Zwischenablage"
+                : (networkClipboard.serverActive
+                    ? "Inhalt Netz-Zwischenablage"
+                    : "Letzte bekannte Netz-Zwischenablage")
 
             Rectangle {
                 id: clipboardBox
@@ -343,6 +418,7 @@ ApplicationWindow {
                 radius: 2
 
                 ScrollView {
+                    visible: rawPreviewImageBase64.length === 0
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.top: parent.top
@@ -367,6 +443,18 @@ ApplicationWindow {
                             border.width: 0
                         }
                     }
+                }
+
+                Image {
+                    visible: rawPreviewImageBase64.length > 0
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    source: visible ? "data:image/png;base64," + rawPreviewImageBase64 : ""
+                    fillMode: Image.PreserveAspectFit
+                    horizontalAlignment: Image.AlignHCenter
+                    verticalAlignment: Image.AlignVCenter
+                    cache: false
+                    asynchronous: true
                 }
             }
 

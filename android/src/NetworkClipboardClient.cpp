@@ -1,6 +1,7 @@
 ﻿#include "NetworkClipboardClient.h"
 
 #include <QAbstractSocket>
+#include <QByteArray>
 #include <QDateTime>
 #include <QDebug>
 #include <QHostInfo>
@@ -29,6 +30,7 @@ namespace {
 constexpr quint16 DiscoveryPort = 8788;
 constexpr quint16 ApiPort = 8787;
 constexpr auto DiscoveryRequest = "NETWORK_CLIPBOARD_DISCOVER_V1";
+constexpr qsizetype MaxImageBytes = 10 * 1024 * 1024;
 
 QString replyErrorMessage(QNetworkReply *reply)
 {
@@ -212,6 +214,55 @@ void NetworkClipboardClient::sendText(const QString &text, const QString &device
                         });
 }
 
+void NetworkClipboardClient::sendImage(const QString &base64Png,
+                                       const QString &fingerprint,
+                                       const QString &deviceName)
+{
+    const QByteArray encoded = base64Png.toLatin1();
+    const QByteArray pngData = QByteArray::fromBase64(encoded);
+    constexpr char PngSignature[] = "\x89PNG\r\n\x1a\n";
+    if (pngData.isEmpty()
+        || pngData.size() > MaxImageBytes
+        || pngData.toBase64() != encoded
+        || !pngData.startsWith(QByteArray(PngSignature, 8))) {
+        setStatus(QStringLiteral("Bild ist ungültig oder größer als 10 MB."));
+        emit imageSendFailed(fingerprint);
+        return;
+    }
+
+    QJsonObject body{
+        {QStringLiteral("deviceId"), QStringLiteral("mobile-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces))},
+        {QStringLiteral("deviceName"), deviceName},
+        {QStringLiteral("type"), QStringLiteral("image")},
+        {QStringLiteral("mimeType"), QStringLiteral("image/png")},
+        {QStringLiteral("content"), base64Png},
+        {QStringLiteral("timestamp"), QDateTime::currentSecsSinceEpoch()}
+    };
+
+    withAvailableServer(QStringLiteral("Prüfe Server vor dem Senden..."),
+                        [this, body, fingerprint](const QString &) {
+                            setStatus(QStringLiteral("Sende Bild an %1").arg(m_serverName));
+                            QNetworkReply *reply = m_network.post(
+                                request(QStringLiteral("/api/clipboard")),
+                                QJsonDocument(body).toJson(QJsonDocument::Compact));
+                            connect(reply, &QNetworkReply::finished, this, [this, reply, fingerprint]() {
+                                if (reply->error() == QNetworkReply::NoError) {
+                                    const QJsonObject stored = QJsonDocument::fromJson(reply->readAll()).object();
+                                    m_latestEntryId = stored.value(QStringLiteral("id")).toString();
+                                    setStatus(QStringLiteral("Bild gesendet."));
+                                    emit imageSent(fingerprint);
+                                } else {
+                                    setStatus(replyErrorMessage(reply));
+                                    emit imageSendFailed(fingerprint);
+                                }
+                                reply->deleteLater();
+                            });
+                        },
+                        [this, fingerprint]() {
+                            emit imageSendFailed(fingerprint);
+                        });
+}
+
 void NetworkClipboardClient::getLatest()
 {
     withAvailableServer(QStringLiteral("Prüfe Server vor dem Empfangen..."), [this](const QString &) {
@@ -226,7 +277,7 @@ void NetworkClipboardClient::getLatest()
             }
 
             const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
-            emit latestReceived(object.value(QStringLiteral("content")).toString());
+            handleClipboardEntry(object);
             setStatus(QStringLiteral("Received."));
             reply->deleteLater();
         });
@@ -244,8 +295,11 @@ void NetworkClipboardClient::pollLatest()
 
     m_latestRequestInFlight = true;
 
-    QNetworkReply *reply = m_network.get(request(QStringLiteral("/api/clipboard/latest")));
-    QTimer::singleShot(2500, reply, [reply]() {
+    QNetworkRequest latestRequest = request(QStringLiteral("/api/clipboard/latest"));
+    if (!m_latestEntryId.isEmpty())
+        latestRequest.setRawHeader("If-None-Match", m_latestEntryId.toUtf8());
+    QNetworkReply *reply = m_network.get(latestRequest);
+    QTimer::singleShot(10000, reply, [reply]() {
         if (reply->isRunning())
             reply->abort();
     });
@@ -253,13 +307,50 @@ void NetworkClipboardClient::pollLatest()
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         m_latestRequestInFlight = false;
 
+        if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 304) {
+            reply->deleteLater();
+            return;
+        }
         if (reply->error() == QNetworkReply::NoError) {
             const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
-            emit latestReceived(object.value(QStringLiteral("content")).toString());
+            handleClipboardEntry(object);
         }
 
         reply->deleteLater();
     });
+}
+
+void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object)
+{
+    const QString id = object.value(QStringLiteral("id")).toString();
+    if (!id.isEmpty() && id == m_latestEntryId)
+        return;
+
+    const QString type = object.value(QStringLiteral("type")).toString(QStringLiteral("text"));
+    if (type == QStringLiteral("image")) {
+        const QString mimeType = object.value(QStringLiteral("mimeType")).toString();
+        const QString content = object.value(QStringLiteral("content")).toString();
+        const QByteArray encoded = content.toLatin1();
+        const QByteArray pngData = QByteArray::fromBase64(encoded);
+        constexpr char PngSignature[] = "\x89PNG\r\n\x1a\n";
+        if (mimeType != QStringLiteral("image/png")
+            || pngData.isEmpty()
+            || pngData.size() > MaxImageBytes
+            || pngData.toBase64() != encoded
+            || !pngData.startsWith(QByteArray(PngSignature, 8))) {
+            setStatus(QStringLiteral("Server lieferte ein ungültiges Bild."));
+            return;
+        }
+
+        if (!id.isEmpty())
+            m_latestEntryId = id;
+        emit latestImageReceived(content);
+        return;
+    }
+
+    if (!id.isEmpty())
+        m_latestEntryId = id;
+    emit latestReceived(object.value(QStringLiteral("content")).toString());
 }
 
 void NetworkClipboardClient::discoverServer()

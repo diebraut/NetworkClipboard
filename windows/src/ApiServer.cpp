@@ -13,6 +13,8 @@ namespace {
 constexpr quint16 DiscoveryPort = 8788;
 constexpr auto DiscoveryRequest = "NETWORK_CLIPBOARD_DISCOVER_V1";
 constexpr qint64 AgentHeartbeatTimeoutMs = 6000;
+constexpr qsizetype MaxRequestBodySize = 14 * 1024 * 1024;
+constexpr qsizetype MaxRequestSize = MaxRequestBodySize + 64 * 1024;
 
 QStringList localServerUrls(quint16 port)
 {
@@ -81,6 +83,7 @@ QByteArray reasonPhrase(int statusCode)
     switch (statusCode) {
     case 200: return "OK";
     case 201: return "Created";
+    case 304: return "Not Modified";
     case 400: return "Bad Request";
     case 401: return "Unauthorized";
     case 404: return "Not Found";
@@ -136,7 +139,10 @@ void ApiServer::handleConnection()
     while (QTcpSocket *socket = m_server.nextPendingConnection()) {
         socket->setParent(this);
         connect(socket, &QTcpSocket::readyRead, this, [this, socket]() { handleReadyRead(socket); });
-        connect(socket, &QTcpSocket::disconnected, socket, &QTcpSocket::deleteLater);
+        connect(socket, &QTcpSocket::disconnected, this, [this, socket]() {
+            m_requestBuffers.remove(socket);
+            socket->deleteLater();
+        });
     }
 }
 
@@ -162,10 +168,43 @@ void ApiServer::handleDiscoveryDatagram()
 
 void ApiServer::handleReadyRead(QTcpSocket *socket)
 {
-    const QByteArray raw = socket->readAll();
+    QByteArray &raw = m_requestBuffers[socket];
+    raw += socket->readAll();
+    if (raw.size() > MaxRequestSize) {
+        m_requestBuffers.remove(socket);
+        sendError(socket, 413, QStringLiteral("Payload exceeds the request size limit."));
+        return;
+    }
+
+    const int headerEnd = raw.indexOf("\r\n\r\n");
+    if (headerEnd < 0)
+        return;
+
+    qsizetype contentLength = 0;
+    const QList<QByteArray> headerLines = raw.left(headerEnd).split('\n');
+    for (const QByteArray &headerLine : headerLines) {
+        const QByteArray line = headerLine.trimmed();
+        if (line.toLower().startsWith("content-length:")) {
+            bool ok = false;
+            contentLength = line.mid(sizeof("content-length:") - 1).trimmed().toLongLong(&ok);
+            if (!ok || contentLength < 0 || contentLength > MaxRequestBodySize) {
+                m_requestBuffers.remove(socket);
+                sendError(socket, 413, QStringLiteral("Invalid or excessive Content-Length."));
+                return;
+            }
+            break;
+        }
+    }
+
+    const qsizetype completeRequestSize = headerEnd + 4 + contentLength;
+    if (raw.size() < completeRequestSize)
+        return;
+
+    const QByteArray completeRequest = raw.left(completeRequestSize);
+    m_requestBuffers.remove(socket);
     HttpRequest request;
     QString error;
-    if (!parseRequest(raw, &request, &error)) {
+    if (!parseRequest(completeRequest, &request, &error)) {
         sendError(socket, 400, error);
         return;
     }
@@ -194,8 +233,8 @@ void ApiServer::processRequest(QTcpSocket *socket, const HttpRequest &request)
     }
 
     if (request.method == QStringLiteral("POST") && request.path == QStringLiteral("/api/clipboard")) {
-        if (request.body.size() > 1024 * 1024) {
-            sendError(socket, 413, QStringLiteral("Payload exceeds the 1 MB limit."));
+        if (request.body.size() > MaxRequestBodySize) {
+            sendError(socket, 413, QStringLiteral("Payload exceeds the request size limit."));
             return;
         }
 
@@ -233,6 +272,13 @@ void ApiServer::processRequest(QTcpSocket *socket, const HttpRequest &request)
             sendError(socket, 404, QStringLiteral("Network clipboard is empty."));
             return;
         }
+        QString knownEntryId = request.headers.value(QStringLiteral("if-none-match")).trimmed();
+        if (knownEntryId.startsWith(QLatin1Char('"')) && knownEntryId.endsWith(QLatin1Char('"')))
+            knownEntryId = knownEntryId.mid(1, knownEntryId.size() - 2);
+        if (!latest->id.isEmpty() && knownEntryId == latest->id) {
+            sendBytes(socket, 304, "application/json; charset=utf-8", {});
+            return;
+        }
         sendJson(socket, 200, latest->toJson());
         return;
     }
@@ -267,7 +313,13 @@ QJsonObject ApiServer::discoveryResponse(const QStringList &urls) const
         {QStringLiteral("urls"), urlArray},
         {QStringLiteral("token"), m_token},
         {QStringLiteral("isMaster"), m_isMaster},
-        {QStringLiteral("agentActive"), isAgentActive()}
+        {QStringLiteral("agentActive"), isAgentActive()},
+        {QStringLiteral("supportedTypes"), QJsonArray{
+             QStringLiteral("text"),
+             QStringLiteral("url"),
+             QStringLiteral("image")
+         }},
+        {QStringLiteral("maxImageBytes"), 10 * 1024 * 1024}
     };
 }
 

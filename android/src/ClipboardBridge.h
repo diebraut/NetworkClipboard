@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <QImage>
 #include <QObject>
 #include <QString>
 
@@ -12,7 +13,22 @@ public:
 
     Q_INVOKABLE QString text() const;
     Q_INVOKABLE void setText(const QString &text);
+    Q_INVOKABLE bool hasImage() const;
+    Q_INVOKABLE QString imageFingerprint() const;
+    Q_INVOKABLE QString imageBase64() const;
+    Q_INVOKABLE bool setImageBase64(const QString &base64);
 
 signals:
     void textChanged();
+    void clipboardChanged();
+
+private:
+    void invalidateImageCache();
+    void updateImageCache() const;
+
+    mutable bool m_imageCacheValid = false;
+    mutable QImage m_cachedImage;
+    mutable QString m_cachedImageKey;
+    mutable QString m_cachedImageFingerprint;
+    mutable QString m_cachedImageBase64;
 };

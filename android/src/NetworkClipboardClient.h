@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <QNetworkAccessManager>
+#include <QJsonObject>
 #include <QObject>
 #include <QQueue>
 #include <QSet>
@@ -55,6 +56,9 @@ public:
     QString status() const;
 
     Q_INVOKABLE void sendText(const QString &text, const QString &deviceName);
+    Q_INVOKABLE void sendImage(const QString &base64Png,
+                               const QString &fingerprint,
+                               const QString &deviceName);
     Q_INVOKABLE void getLatest();
     Q_INVOKABLE void pollLatest();
     Q_INVOKABLE void discoverServer();
@@ -73,8 +77,11 @@ signals:
     void tokenChanged();
     void statusChanged();
     void latestReceived(const QString &text);
+    void latestImageReceived(const QString &base64Png);
     void textSent(const QString &text);
     void textSendFailed(const QString &text);
+    void imageSent(const QString &fingerprint);
+    void imageSendFailed(const QString &fingerprint);
 
 private:
     QString normalizedServerUrl(QString *errorMessage = nullptr) const;
@@ -104,6 +111,7 @@ private:
     void setServerActive(bool active);
     void updateServerName(const QString &serverName, const QString &serverUrl);
     void setStatus(const QString &status);
+    void handleClipboardEntry(const QJsonObject &object);
 
     QNetworkAccessManager m_network;
     QTimer m_serverCheckTimer;
@@ -127,6 +135,7 @@ private:
     QString m_serverName;
     QString m_token;
     QString m_status = QStringLiteral("Ready");
+    QString m_latestEntryId;
 #ifdef Q_OS_ANDROID
     QJniObject m_multicastLock;
 #endif
