@@ -24,16 +24,31 @@
 namespace {
 constexpr qint64 ClipboardIgnoreWindowMs = 1500;
 
-QByteArray imagePngData(const QImage &image)
+QByteArray imagePngData(const QImage &sourceImage)
 {
-    if (image.isNull())
+    constexpr qsizetype MaxImageBytes = 10 * 1024 * 1024;
+    if (sourceImage.isNull())
         return {};
 
-    QByteArray data;
-    QBuffer buffer(&data);
-    if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG"))
-        return {};
-    return data;
+    QImage image = sourceImage;
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        QByteArray data;
+        QBuffer buffer(&data);
+        if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG"))
+            return {};
+        if (data.size() <= MaxImageBytes)
+            return data;
+
+        const int nextWidth = qMax(1, qRound(image.width() * 0.8));
+        const int nextHeight = qMax(1, qRound(image.height() * 0.8));
+        if (nextWidth == image.width() && nextHeight == image.height())
+            break;
+        image = image.scaled(nextWidth,
+                             nextHeight,
+                             Qt::KeepAspectRatio,
+                             Qt::SmoothTransformation);
+    }
+    return {};
 }
 
 QByteArray imageHash(const QImage &image)
@@ -194,6 +209,7 @@ void TrayController::setServerInfo(const QUrl &serverUrl, quint16 port, const QS
 void TrayController::onClipboardChanged()
 {
     const quint64 generation = ++m_clipboardChangeGeneration;
+    m_clipboardRetriesRemaining = 12;
     m_clipboardChangeTimer.start();
     QTimer::singleShot(900, this, [this, generation]() {
         if (generation == m_clipboardChangeGeneration)
@@ -204,18 +220,29 @@ void TrayController::onClipboardChanged()
 void TrayController::processClipboardChange()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const QMimeData *mimeData = m_clipboard->mimeData();
 
-    if (m_clipboard->mimeData()->hasImage()) {
+    if (mimeData && mimeData->hasImage()) {
         const QImage image = m_clipboard->image();
         const QByteArray pngData = imagePngData(image);
-        const QByteArray hash = imageHash(image);
-        if (now < m_ignoreClipboardChangesUntil && hash == m_ignoredClipboardImageHash)
-            return;
-        if (!m_autoSendEnabled || pngData.isEmpty() || hash == m_lastPublishedImageHash)
-            return;
+        if (!pngData.isEmpty()) {
+            const QByteArray hash = imageHash(QImage::fromData(pngData, "PNG"));
+            if (now < m_ignoreClipboardChangesUntil && hash == m_ignoredClipboardImageHash)
+                return;
+            if (!m_autoSendEnabled || hash == m_lastPublishedImageHash)
+                return;
 
-        publishClipboardImage(image, false);
-        return;
+            publishClipboardImage(image, false);
+            return;
+        }
+
+        // Browsers may advertise an image before delayed clipboard rendering
+        // has produced usable pixels. Retry before falling back to its URL/text.
+        if (m_clipboardRetriesRemaining > 0) {
+            --m_clipboardRetriesRemaining;
+            m_clipboardChangeTimer.start(350);
+            return;
+        }
     }
 
     const QString text = m_clipboard->text().trimmed();
@@ -274,9 +301,13 @@ void TrayController::sendAgentHeartbeat()
 
 void TrayController::sendCurrentClipboard()
 {
-    if (m_clipboard->mimeData()->hasImage()) {
-        publishClipboardImage(m_clipboard->image(), true, true);
-        return;
+    const QMimeData *mimeData = m_clipboard->mimeData();
+    if (mimeData && mimeData->hasImage()) {
+        const QImage image = m_clipboard->image();
+        if (!imagePngData(image).isEmpty()) {
+            publishClipboardImage(image, true, true);
+            return;
+        }
     }
 
     publishClipboardText(m_clipboard->text().trimmed(), true, true);
@@ -322,7 +353,7 @@ void TrayController::publishClipboardImage(const QImage &image, bool showSuccess
         return;
     }
 
-    const QByteArray hash = imageHash(image);
+    const QByteArray hash = imageHash(QImage::fromData(pngData, "PNG"));
     if (!force && hash == m_lastPublishedImageHash)
         return;
 
@@ -350,9 +381,13 @@ void TrayController::publishCurrentClipboardIfAvailable(bool force)
     if (!m_autoSendEnabled || !m_serviceRunning || m_token.isEmpty() || !m_serverUrl.isValid())
         return;
 
-    if (m_clipboard->mimeData()->hasImage()) {
-        publishClipboardImage(m_clipboard->image(), false, force);
-        return;
+    const QMimeData *mimeData = m_clipboard->mimeData();
+    if (mimeData && mimeData->hasImage()) {
+        const QImage image = m_clipboard->image();
+        if (!imagePngData(image).isEmpty()) {
+            publishClipboardImage(image, false, force);
+            return;
+        }
     }
 
     publishClipboardText(m_clipboard->text().trimmed(), false, force);

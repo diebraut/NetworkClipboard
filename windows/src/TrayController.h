@@ -76,4 +76,5 @@ private:
     std::optional<ClipboardEntry> m_pendingEntry;
     bool m_pendingShowSuccessMessage = false;
     quint64 m_clipboardChangeGeneration = 0;
+    int m_clipboardRetriesRemaining = 0;
 };
