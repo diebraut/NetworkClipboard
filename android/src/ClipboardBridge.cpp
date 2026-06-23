@@ -57,6 +57,33 @@ QByteArray imageFingerprintBytes(const QImage &image)
     return hash.result();
 }
 
+QByteArray networkPngData(const QImage &sourceImage)
+{
+    constexpr qsizetype MaxImageBytes = 10 * 1024 * 1024;
+    if (sourceImage.isNull())
+        return {};
+
+    QImage image = sourceImage;
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        QByteArray pngData;
+        QBuffer buffer(&pngData);
+        if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG"))
+            return {};
+        if (pngData.size() <= MaxImageBytes)
+            return pngData;
+
+        const int nextWidth = qMax(1, qRound(image.width() * 0.8));
+        const int nextHeight = qMax(1, qRound(image.height() * 0.8));
+        if (nextWidth == image.width() && nextHeight == image.height())
+            break;
+        image = image.scaled(nextWidth,
+                             nextHeight,
+                             Qt::KeepAspectRatio,
+                             Qt::SmoothTransformation);
+    }
+    return {};
+}
+
 #ifdef Q_OS_ANDROID
 QJniObject androidContext()
 {
@@ -180,7 +207,6 @@ void ClipboardBridge::updateImageCache() const
     if (m_imageCacheValid)
         return;
 
-    m_imageCacheValid = true;
 #ifdef Q_OS_ANDROID
     const QString sourceBase64 = androidClipboardImageBase64();
     if (sourceBase64.isEmpty())
@@ -192,9 +218,9 @@ void ClipboardBridge::updateImageCache() const
     if (m_cachedImage.isNull())
         return;
 
+    m_imageCacheValid = true;
     m_cachedImageFingerprint = QString::fromLatin1(imageFingerprintBytes(m_cachedImage).toHex());
-    QByteArray pngData;
-    QBuffer buffer(&pngData);
-    if (buffer.open(QIODevice::WriteOnly) && m_cachedImage.save(&buffer, "PNG"))
+    const QByteArray pngData = networkPngData(m_cachedImage);
+    if (!pngData.isEmpty())
         m_cachedImageBase64 = QString::fromLatin1(pngData.toBase64());
 }

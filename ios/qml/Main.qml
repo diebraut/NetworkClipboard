@@ -20,6 +20,7 @@ ApplicationWindow {
     property bool forceNextNetworkText: false
     property bool waitingForServerText: false
     property double localPublishGuardUntil: 0
+    property int clipboardSyncRetries: 0
     readonly property bool compactLayout: width < 520
 
     function deviceName() {
@@ -32,18 +33,20 @@ ApplicationWindow {
 
         if (localClipboard.hasImage()) {
             const fingerprint = localClipboard.imageFingerprint()
-            if (fingerprint.length === 0 || fingerprint === observedLocalImageFingerprint)
+            if (fingerprint.length === 0)
                 return
 
             const base64 = localClipboard.imageBase64()
             if (base64.length === 0)
                 return
 
-            observedLocalImageFingerprint = fingerprint
-            observedLocalClipboardText = ""
-            lastAutoSentText = ""
-            rawPreviewText = ""
-            rawPreviewImageBase64 = base64
+            if (fingerprint !== observedLocalImageFingerprint) {
+                observedLocalImageFingerprint = fingerprint
+                observedLocalClipboardText = ""
+                lastAutoSentText = ""
+                rawPreviewText = ""
+                rawPreviewImageBase64 = base64
+            }
 
             if (networkClipboard.serverActive
                     && !imageSendInFlight
@@ -77,6 +80,7 @@ ApplicationWindow {
     }
 
     function scheduleClipboardSync() {
+        clipboardSyncRetries = 12
         clipboardSyncTimer.restart()
     }
 
@@ -161,9 +165,15 @@ ApplicationWindow {
 
     Timer {
         id: clipboardSyncTimer
-        interval: 250
+        interval: 350
         repeat: false
-        onTriggered: syncClipboardToPreview()
+        onTriggered: {
+            syncClipboardToPreview()
+            if (clipboardSyncRetries > 0) {
+                --clipboardSyncRetries
+                restart()
+            }
+        }
     }
 
     Timer {
@@ -180,6 +190,13 @@ ApplicationWindow {
                 scheduleClipboardSync()
                 refreshNetworkClipboard(false)
             }
+        }
+    }
+
+    Connections {
+        target: localClipboard
+        function onClipboardChanged() {
+            scheduleClipboardSync()
         }
     }
 

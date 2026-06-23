@@ -29,18 +29,20 @@ ApplicationWindow {
     function syncClipboardToPreview() {
         if (localClipboard.hasImage()) {
             const fingerprint = localClipboard.imageFingerprint()
-            if (fingerprint.length === 0 || fingerprint === observedLocalImageFingerprint)
+            if (fingerprint.length === 0)
                 return
 
-            observedLocalImageFingerprint = fingerprint
             const base64 = localClipboard.imageBase64()
             if (base64.length === 0)
                 return
 
-            rawPreviewText = ""
-            rawPreviewImageBase64 = base64
-            observedLocalClipboardText = ""
-            lastAutoSentText = ""
+            if (fingerprint !== observedLocalImageFingerprint) {
+                observedLocalImageFingerprint = fingerprint
+                rawPreviewText = ""
+                rawPreviewImageBase64 = base64
+                observedLocalClipboardText = ""
+                lastAutoSentText = ""
+            }
 
             if (networkClipboard.serverActive
                     && !waitingForServerText
