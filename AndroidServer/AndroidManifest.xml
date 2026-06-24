@@ -34,6 +34,12 @@
         android:label="NetworkClipboardServer"
         android:usesCleartextTraffic="true">
 
+        <provider
+            android:name="org.qtproject.example.NetworkClipboardAndroidServer.NetworkClipboardImageProvider"
+            android:authorities="${applicationId}.imageprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
         <service
             android:name=".NetworkClipboardForegroundService"
             android:enabled="true"

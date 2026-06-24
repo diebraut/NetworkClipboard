@@ -1,9 +1,13 @@
 #include "AndroidServerController.h"
 
 #include <QDateTime>
+#include <QBuffer>
+#include <QByteArray>
+#include <QCryptographicHash>
 #include <QGuiApplication>
 #include <QHostAddress>
 #include <QHostInfo>
+#include <QImage>
 #include <QJsonDocument>
 #include <QNetworkInterface>
 #include <QSettings>
@@ -28,6 +32,13 @@ bool isUrlText(const QString &text)
     return text.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive)
         || text.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive);
 }
+
+QString fingerprintForBase64(const QString &base64)
+{
+    if (base64.isEmpty())
+        return {};
+    return QString::fromLatin1(QCryptographicHash::hash(base64.toLatin1(), QCryptographicHash::Sha256).toHex());
+}
 }
 
 AndroidServerController::AndroidServerController(QObject *parent)
@@ -44,13 +55,13 @@ AndroidServerController::AndroidServerController(QObject *parent)
 
     connect(m_clipboard, &QClipboard::dataChanged, this, &AndroidServerController::onClipboardChanged);
     connect(&m_store, &ClipboardStore::latestChanged, this, [this](const ClipboardEntry &entry) {
-        setLatestContent(entry.content);
+        setLatestEntry(entry);
         if (entry.deviceId != m_deviceId)
             applyEntryToClipboard(entry);
     });
 
     QTimer::singleShot(0, this, &AndroidServerController::start);
-    QTimer::singleShot(750, this, [this]() { publishClipboardText(m_clipboard->text().trimmed(), false); });
+    QTimer::singleShot(750, this, [this]() { onClipboardChanged(); });
 }
 
 QString AndroidServerController::status() const { return m_status; }
@@ -58,6 +69,7 @@ QString AndroidServerController::token() const { return m_token; }
 QString AndroidServerController::serverInfo() const { return currentServerInfo(); }
 QString AndroidServerController::serverUrlsText() const { return currentServerUrls().join(QLatin1Char('\n')); }
 QString AndroidServerController::latestContent() const { return m_latestContent; }
+QString AndroidServerController::latestImageBase64() const { return m_latestImageBase64; }
 bool AndroidServerController::autoPublish() const { return m_autoPublish; }
 bool AndroidServerController::masterServer() const { return m_masterServer; }
 
@@ -71,6 +83,12 @@ void AndroidServerController::setAutoPublish(bool enabled)
 
 void AndroidServerController::publishClipboardNow()
 {
+    const QString imageBase64 = clipboardImageBase64();
+    if (!imageBase64.isEmpty()) {
+        publishClipboardImage(imageBase64, true);
+        return;
+    }
+
     publishClipboardText(m_clipboard->text().trimmed(), true);
 }
 
@@ -234,8 +252,21 @@ void AndroidServerController::acquireMulticastLock()
 
 void AndroidServerController::onClipboardChanged()
 {
-    const QString text = m_clipboard->text().trimmed();
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+    const QString imageBase64 = clipboardImageBase64();
+    if (!imageBase64.isEmpty()) {
+        const QString fingerprint = clipboardImageFingerprint();
+        if (now < m_ignoreClipboardChangesUntil && fingerprint == m_ignoredClipboardImageFingerprint)
+            return;
+        if (!m_autoPublish || !m_started || fingerprint == m_lastPublishedImageFingerprint)
+            return;
+
+        publishClipboardImage(imageBase64, false);
+        return;
+    }
+
+    const QString text = m_clipboard->text().trimmed();
     if (now < m_ignoreClipboardChangesUntil && text == m_ignoredClipboardContent)
         return;
     if (!m_autoPublish || !m_started || text.isEmpty() || text == m_lastPublishedContent)
@@ -266,6 +297,7 @@ void AndroidServerController::publishClipboardText(const QString &text, bool for
     }
 
     m_lastPublishedContent = text;
+    m_lastPublishedImageFingerprint.clear();
     m_store.setLatest(entry);
 #ifdef Q_OS_ANDROID
     const QJniObject context = QNativeInterface::QAndroidApplication::context();
@@ -281,14 +313,71 @@ void AndroidServerController::publishClipboardText(const QString &text, bool for
     setStatus(QStringLiteral("Server aktiv auf Port %1. Android Clipboard veroeffentlicht.").arg(ApiPort));
 }
 
+void AndroidServerController::publishClipboardImage(const QString &base64Png, bool force)
+{
+    if (!m_started || base64Png.isEmpty())
+        return;
+
+    const QString fingerprint = fingerprintForBase64(base64Png);
+    if (!force && fingerprint == m_lastPublishedImageFingerprint)
+        return;
+
+    ClipboardEntry entry;
+    entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    entry.deviceId = m_deviceId;
+    entry.deviceName = deviceName();
+    entry.type = QStringLiteral("image");
+    entry.mimeType = QStringLiteral("image/png");
+    entry.content = base64Png;
+    entry.timestamp = QDateTime::currentSecsSinceEpoch();
+
+    QString error;
+    if (!entry.isValid(&error)) {
+        setStatus(error);
+        return;
+    }
+
+    m_lastPublishedImageFingerprint = fingerprint;
+    m_lastPublishedContent.clear();
+    m_store.setLatest(entry);
+#ifdef Q_OS_ANDROID
+    const QJniObject context = QNativeInterface::QAndroidApplication::context();
+    const QJniObject json = QJniObject::fromString(
+        QString::fromUtf8(QJsonDocument(entry.toJson()).toJson(QJsonDocument::Compact)));
+    QJniObject::callStaticMethod<void>(
+        "org/qtproject/example/NetworkClipboardAndroidServer/NetworkClipboardForegroundService",
+        "publishEntry",
+        "(Landroid/content/Context;Ljava/lang/String;)V",
+        context.object(),
+        json.object<jstring>());
+#endif
+    setStatus(QStringLiteral("Server aktiv auf Port %1. Android Bild-Clipboard veroeffentlicht.").arg(ApiPort));
+}
+
 void AndroidServerController::applyEntryToClipboard(const ClipboardEntry &entry)
 {
     if (entry.content.trimmed().isEmpty())
         return;
 
     m_ignoreClipboardChangesUntil = QDateTime::currentMSecsSinceEpoch() + ClipboardIgnoreWindowMs;
+    if (entry.type == QStringLiteral("image")) {
+        const QString fingerprint = fingerprintForBase64(entry.content);
+        if (!setClipboardImageBase64(entry.content)) {
+            setStatus(QStringLiteral("Server aktiv auf Port %1. Netzwerk-Bild konnte nicht nach Android uebernommen werden.").arg(ApiPort));
+            return;
+        }
+        m_ignoredClipboardContent.clear();
+        m_ignoredClipboardImageFingerprint = fingerprint;
+        m_lastPublishedContent.clear();
+        m_lastPublishedImageFingerprint = fingerprint;
+        setStatus(QStringLiteral("Server aktiv auf Port %1. Netzwerk-Bild nach Android uebernommen.").arg(ApiPort));
+        return;
+    }
+
     m_ignoredClipboardContent = entry.content;
+    m_ignoredClipboardImageFingerprint.clear();
     m_lastPublishedContent = entry.content;
+    m_lastPublishedImageFingerprint.clear();
     m_clipboard->setText(entry.content);
     setStatus(QStringLiteral("Server aktiv auf Port %1. Netzwerk-Clipboard nach Android uebernommen.").arg(ApiPort));
 }
@@ -301,12 +390,81 @@ void AndroidServerController::setStatus(const QString &status)
     emit statusChanged();
 }
 
-void AndroidServerController::setLatestContent(const QString &content)
+void AndroidServerController::setLatestEntry(const ClipboardEntry &entry)
 {
-    if (m_latestContent == content)
+    const QString latestContent = entry.type == QStringLiteral("image") ? QString{} : entry.content;
+    const QString latestImageBase64 = entry.type == QStringLiteral("image") ? entry.content : QString{};
+    if (m_latestContent == latestContent && m_latestImageBase64 == latestImageBase64)
         return;
-    m_latestContent = content;
+    m_latestContent = latestContent;
+    m_latestImageBase64 = latestImageBase64;
     emit latestContentChanged();
+}
+
+QString AndroidServerController::clipboardImageBase64() const
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = QNativeInterface::QAndroidApplication::context();
+    if (!context.isValid())
+        return {};
+
+    const QJniObject result = QJniObject::callStaticObjectMethod(
+        "org/qtproject/example/NetworkClipboardAndroidServer/ImageClipboardHelper",
+        "imageBase64",
+        "(Landroid/content/Context;)Ljava/lang/String;",
+        context.object());
+    return result.isValid() ? result.toString() : QString{};
+#else
+    const QImage image = m_clipboard->image();
+    if (image.isNull())
+        return {};
+    QByteArray data;
+    QBuffer buffer(&data);
+    if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG"))
+        return {};
+    return QString::fromLatin1(data.toBase64());
+#endif
+}
+
+QString AndroidServerController::clipboardImageFingerprint() const
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = QNativeInterface::QAndroidApplication::context();
+    if (!context.isValid())
+        return {};
+
+    const QJniObject key = QJniObject::callStaticObjectMethod(
+        "org/qtproject/example/NetworkClipboardAndroidServer/ImageClipboardHelper",
+        "imageKey",
+        "(Landroid/content/Context;)Ljava/lang/String;",
+        context.object());
+    if (key.isValid() && !key.toString().isEmpty())
+        return key.toString();
+#endif
+    return fingerprintForBase64(clipboardImageBase64());
+}
+
+bool AndroidServerController::setClipboardImageBase64(const QString &base64Png)
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = QNativeInterface::QAndroidApplication::context();
+    if (!context.isValid())
+        return false;
+
+    const QJniObject encoded = QJniObject::fromString(base64Png);
+    return QJniObject::callStaticMethod<jboolean>(
+        "org/qtproject/example/NetworkClipboardAndroidServer/ImageClipboardHelper",
+        "setImageBase64",
+        "(Landroid/content/Context;Ljava/lang/String;)Z",
+        context.object(),
+        encoded.object<jstring>());
+#else
+    const QImage image = QImage::fromData(QByteArray::fromBase64(base64Png.toLatin1()), "PNG");
+    if (image.isNull())
+        return false;
+    m_clipboard->setImage(image);
+    return true;
+#endif
 }
 
 QString AndroidServerController::deviceName() const

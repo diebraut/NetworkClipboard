@@ -9,6 +9,7 @@ struct ClipboardEntry
     QString deviceId;
     QString deviceName;
     QString type = QStringLiteral("text");
+    QString mimeType;
     QString content;
     qint64 timestamp = 0;
 

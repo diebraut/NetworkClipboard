@@ -90,11 +90,14 @@ ApplicationWindow {
         }
 
         GroupBox {
-            title: "Latest Clipboard"
+            title: androidServer.latestImageBase64.length > 0
+                ? "Latest Image"
+                : "Latest Clipboard"
             Layout.fillWidth: true
             Layout.fillHeight: true
 
             ScrollView {
+                visible: androidServer.latestImageBase64.length === 0
                 anchors.fill: parent
 
                 TextArea {
@@ -104,6 +107,18 @@ ApplicationWindow {
                     selectByMouse: true
                     background: Rectangle { color: "transparent"; border.width: 0 }
                 }
+            }
+
+            Image {
+                visible: androidServer.latestImageBase64.length > 0
+                anchors.fill: parent
+                anchors.margins: 8
+                source: visible ? "data:image/png;base64," + androidServer.latestImageBase64 : ""
+                fillMode: Image.PreserveAspectFit
+                horizontalAlignment: Image.AlignHCenter
+                verticalAlignment: Image.AlignVCenter
+                cache: false
+                asynchronous: true
             }
         }
 

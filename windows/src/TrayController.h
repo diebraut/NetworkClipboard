@@ -16,6 +16,7 @@ class QAction;
 class QClipboard;
 class QImage;
 class QMenu;
+class QMimeData;
 
 class TrayController : public QObject
 {
@@ -42,6 +43,8 @@ private:
     void sendEntryToServer(const ClipboardEntry &entry, bool showSuccessMessage);
     void publishClipboardText(const QString &text, bool showSuccessMessage, bool force = false);
     void publishClipboardImage(const QImage &image, bool showSuccessMessage, bool force = false);
+    bool tryPublishImageUrl(const QMimeData *mimeData, const QString &text, bool showSuccessMessage, bool force, bool publishTextOnFailure);
+    void publishDownloadedImageUrl(const QUrl &imageUrl, const QString &fallbackText, bool showSuccessMessage, bool force, bool publishTextOnFailure);
     void publishCurrentClipboardIfAvailable(bool force);
     void scheduleCurrentClipboardPublish(bool force);
     void applyNetworkEntryToClipboard(const ClipboardEntry &entry, bool showMessage, bool allowOwnEntry);
@@ -77,4 +80,5 @@ private:
     bool m_pendingShowSuccessMessage = false;
     quint64 m_clipboardChangeGeneration = 0;
     int m_clipboardRetriesRemaining = 0;
+    QString m_pendingImageUrlDownload;
 };

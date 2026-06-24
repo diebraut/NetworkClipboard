@@ -19,6 +19,7 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.util.Base64;
 import android.util.Log;
 
 import org.json.JSONArray;
@@ -26,6 +27,8 @@ import org.json.JSONObject;
 import org.qtproject.qt.android.bindings.QtActivity;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.DatagramPacket;
@@ -49,6 +52,9 @@ public class NetworkClipboardForegroundService extends Service
     private static final int NOTIFICATION_ID = 8787;
     private static final int API_PORT = 8787;
     private static final int DISCOVERY_PORT = 8788;
+    private static final int MAX_TEXT_BYTES = 1024 * 1024;
+    private static final int MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+    private static final int MAX_REQUEST_BODY_BYTES = 14 * 1024 * 1024;
     private static final String DISCOVERY_REQUEST = "NETWORK_CLIPBOARD_DISCOVER_V1";
     private static final String SETTINGS_NAME = "network_clipboard_server";
 
@@ -292,17 +298,17 @@ public class NetworkClipboardForegroundService extends Service
                 return;
             }
 
-            if (contentLength > 1024 * 1024) {
-                sendError(connection, 413, "Payload exceeds the 1 MB limit.");
+            if (contentLength > MAX_REQUEST_BODY_BYTES) {
+                sendError(connection, 413, "Payload exceeds the request size limit.");
                 return;
             }
 
             byte[] body = readBody(input, contentLength);
             if ("POST".equals(method) && "/api/clipboard".equals(path)) {
                 JSONObject entry = new JSONObject(new String(body, StandardCharsets.UTF_8));
-                String content = entry.optString("content").trim();
-                if (content.isEmpty()) {
-                    sendError(connection, 400, "Clipboard content is empty.");
+                String validationError = validateEntry(entry);
+                if (validationError != null) {
+                    sendError(connection, 400, validationError);
                     return;
                 }
                 storeEntry(entry, true);
@@ -359,6 +365,46 @@ public class NetworkClipboardForegroundService extends Service
         return body;
     }
 
+    private String validateEntry(JSONObject entry)
+    {
+        String type = entry.optString("type", "text");
+        String content = entry.optString("content", "");
+        if (!"text".equals(type) && !"url".equals(type) && !"image".equals(type))
+            return "Unsupported clipboard type.";
+        if (content.isEmpty())
+            return "Content must not be empty.";
+
+        if ("image".equals(type)) {
+            if (!"image/png".equals(entry.optString("mimeType", "")))
+                return "Only PNG images are supported.";
+
+            byte[] imageData;
+            try {
+                imageData = Base64.decode(content, Base64.DEFAULT);
+            } catch (Exception exception) {
+                return "Image content is not valid Base64.";
+            }
+
+            if (imageData.length == 0 || imageData.length > MAX_IMAGE_BYTES)
+                return "Image exceeds the 10 MB limit or is invalid.";
+            if (imageData.length < 8
+                || imageData[0] != (byte)0x89
+                || imageData[1] != 0x50
+                || imageData[2] != 0x4e
+                || imageData[3] != 0x47
+                || imageData[4] != 0x0d
+                || imageData[5] != 0x0a
+                || imageData[6] != 0x1a
+                || imageData[7] != 0x0a) {
+                return "Image exceeds the 10 MB limit or is invalid.";
+            }
+        } else if (content.getBytes(StandardCharsets.UTF_8).length > MAX_TEXT_BYTES) {
+            return "Content exceeds the 1 MB limit.";
+        }
+
+        return null;
+    }
+
     private void storeEntry(JSONObject entry, boolean applyToClipboard)
     {
         synchronized (entryLock) {
@@ -369,12 +415,52 @@ public class NetworkClipboardForegroundService extends Service
         }
 
         if (applyToClipboard) {
+            String type = entry.optString("type", "text");
             String content = entry.optString("content");
-            if (!content.isEmpty()) {
+            if ("image".equals(type)) {
+                setImageClipboard(content);
+            } else if (!content.isEmpty()) {
                 ClipboardManager clipboard =
                     (ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE);
                 clipboard.setPrimaryClip(ClipData.newPlainText("Network Clipboard", content));
             }
+        }
+    }
+
+    private boolean setImageClipboard(String base64)
+    {
+        try {
+            byte[] pngData = Base64.decode(base64, Base64.DEFAULT);
+            if (pngData.length == 0 || pngData.length > MAX_IMAGE_BYTES)
+                return false;
+
+            File directory = new File(getCacheDir(), "network_clipboard");
+            if (!directory.exists() && !directory.mkdirs())
+                return false;
+
+            File[] oldFiles = directory.listFiles();
+            if (oldFiles != null) {
+                for (File oldFile : oldFiles)
+                    oldFile.delete();
+            }
+
+            File imageFile = new File(directory, "clipboard-" + System.currentTimeMillis() + ".png");
+            try (FileOutputStream output = new FileOutputStream(imageFile)) {
+                output.write(pngData);
+            }
+
+            Uri uri = NetworkClipboardImageProvider.uriForFile(this, imageFile);
+            ClipboardManager clipboard =
+                (ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null)
+                return false;
+
+            clipboard.setPrimaryClip(
+                ClipData.newUri(getContentResolver(), "Network Clipboard Image", uri));
+            return true;
+        } catch (Exception exception) {
+            Log.w(LOG_TAG, "Could not put image into Android clipboard", exception);
+            return false;
         }
     }
 
@@ -393,7 +479,12 @@ public class NetworkClipboardForegroundService extends Service
             .put("urls", urls)
             .put("token", token)
             .put("isMaster", isMaster)
-            .put("agentActive", true);
+            .put("agentActive", true)
+            .put("maxImageBytes", MAX_IMAGE_BYTES)
+            .put("supportedTypes", new JSONArray()
+                .put("text")
+                .put("url")
+                .put("image"));
     }
 
     private List<String> serverUrls()

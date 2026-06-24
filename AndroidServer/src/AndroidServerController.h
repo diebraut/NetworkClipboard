@@ -19,6 +19,7 @@ class AndroidServerController : public QObject
     Q_PROPERTY(QString serverInfo READ serverInfo NOTIFY serverInfoChanged)
     Q_PROPERTY(QString serverUrlsText READ serverUrlsText NOTIFY serverInfoChanged)
     Q_PROPERTY(QString latestContent READ latestContent NOTIFY latestContentChanged)
+    Q_PROPERTY(QString latestImageBase64 READ latestImageBase64 NOTIFY latestContentChanged)
     Q_PROPERTY(bool autoPublish READ autoPublish WRITE setAutoPublish NOTIFY autoPublishChanged)
     Q_PROPERTY(bool masterServer READ masterServer WRITE setMasterServer NOTIFY masterServerChanged)
 
@@ -30,6 +31,7 @@ public:
     QString serverInfo() const;
     QString serverUrlsText() const;
     QString latestContent() const;
+    QString latestImageBase64() const;
     bool autoPublish() const;
     void setAutoPublish(bool enabled);
     bool masterServer() const;
@@ -53,9 +55,13 @@ private:
     void acquireMulticastLock();
     void onClipboardChanged();
     void publishClipboardText(const QString &text, bool force);
+    void publishClipboardImage(const QString &base64Png, bool force);
     void applyEntryToClipboard(const ClipboardEntry &entry);
     void setStatus(const QString &status);
-    void setLatestContent(const QString &content);
+    void setLatestEntry(const ClipboardEntry &entry);
+    QString clipboardImageBase64() const;
+    QString clipboardImageFingerprint() const;
+    bool setClipboardImageBase64(const QString &base64Png);
     QString deviceName() const;
     QString deviceId();
     QString currentServerInfo() const;
@@ -68,13 +74,16 @@ private:
     QString m_token;
     QString m_deviceId;
     QString m_latestContent;
+    QString m_latestImageBase64;
     bool m_autoPublish = true;
     bool m_masterServer = false;
     bool m_started = false;
     bool m_localNetworkPermissionRequested = false;
     qint64 m_ignoreClipboardChangesUntil = 0;
     QString m_ignoredClipboardContent;
+    QString m_ignoredClipboardImageFingerprint;
     QString m_lastPublishedContent;
+    QString m_lastPublishedImageFingerprint;
 #ifdef Q_OS_ANDROID
     QJniObject m_multicastLock;
 #endif

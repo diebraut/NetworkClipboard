@@ -15,6 +15,8 @@
 namespace {
 constexpr quint16 DiscoveryPort = 8788;
 constexpr auto DiscoveryRequest = "NETWORK_CLIPBOARD_DISCOVER_V1";
+constexpr qsizetype MaxRequestBodySize = 14 * 1024 * 1024;
+constexpr qsizetype MaxImageBytes = 10 * 1024 * 1024;
 
 QByteArray reasonPhrase(int statusCode)
 {
@@ -223,8 +225,8 @@ void ApiServer::processRequest(QTcpSocket *socket, const HttpRequest &request)
     }
 
     if (request.method == QStringLiteral("POST") && request.path == QStringLiteral("/api/clipboard")) {
-        if (request.body.size() > 1024 * 1024) {
-            sendError(socket, 413, QStringLiteral("Payload exceeds the 1 MB limit."));
+        if (request.body.size() > MaxRequestBodySize) {
+            sendError(socket, 413, QStringLiteral("Payload exceeds the request size limit."));
             return;
         }
 
@@ -328,7 +330,13 @@ QJsonObject ApiServer::discoveryResponse(const QStringList &urls) const
         {QStringLiteral("urls"), urlArray},
         {QStringLiteral("token"), m_token},
         {QStringLiteral("isMaster"), m_masterServer},
-        {QStringLiteral("agentActive"), true}
+        {QStringLiteral("agentActive"), true},
+        {QStringLiteral("maxImageBytes"), MaxImageBytes},
+        {QStringLiteral("supportedTypes"), QJsonArray{
+             QStringLiteral("text"),
+             QStringLiteral("url"),
+             QStringLiteral("image")
+         }}
     };
 }
 

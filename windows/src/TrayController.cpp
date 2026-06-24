@@ -17,6 +17,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QStyle>
 #include <QSettings>
 #include <QUuid>
@@ -140,6 +141,133 @@ bool isServiceRunning()
     return false;
 #endif
 }
+
+bool isLikelyImageUrl(const QUrl &url)
+{
+    if (!url.isValid())
+        return false;
+
+    const QString scheme = url.scheme().toLower();
+    if (scheme != QStringLiteral("http") && scheme != QStringLiteral("https"))
+        return false;
+
+    const QString path = url.path().toLower();
+    if (path.endsWith(QStringLiteral(".png"))
+        || path.endsWith(QStringLiteral(".jpg"))
+        || path.endsWith(QStringLiteral(".jpeg"))
+        || path.endsWith(QStringLiteral(".webp"))
+        || path.endsWith(QStringLiteral(".gif"))
+        || path.endsWith(QStringLiteral(".bmp"))) {
+        return true;
+    }
+
+    const QString host = url.host().toLower();
+    if (host.endsWith(QStringLiteral("bing.com")) && path == QStringLiteral("/th"))
+        return true;
+
+    return false;
+}
+
+QString htmlDecoded(QString text)
+{
+    text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+    text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+    text.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
+    text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+    text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+    return text;
+}
+
+QString decodedClipboardData(const QByteArray &data)
+{
+    if (data.isEmpty())
+        return {};
+
+    QString utf16;
+    if (data.size() >= 2 && data.size() % 2 == 0) {
+        utf16 = QString::fromUtf16(reinterpret_cast<const char16_t *>(data.constData()), data.size() / 2);
+        utf16.remove(QLatin1Char('\0'));
+    }
+
+    QString utf8 = QString::fromUtf8(data);
+    utf8.remove(QLatin1Char('\0'));
+
+    return utf16.count(QStringLiteral("http"), Qt::CaseInsensitive) > utf8.count(QStringLiteral("http"), Qt::CaseInsensitive)
+        ? utf16
+        : utf8;
+}
+
+QUrl firstHttpUrlFromText(const QString &text)
+{
+    const QString trimmed = htmlDecoded(text.trimmed());
+    if (!trimmed.contains(QLatin1Char('\n')) && !trimmed.contains(QLatin1Char('\r'))) {
+        const QUrl directUrl(trimmed);
+        const QString scheme = directUrl.scheme().toLower();
+        if (scheme == QStringLiteral("http") || scheme == QStringLiteral("https"))
+            return directUrl;
+    }
+
+    static const QRegularExpression urlPattern(QStringLiteral(R"(https?://[^\s"'<>]+)"));
+    QRegularExpressionMatchIterator iterator = urlPattern.globalMatch(trimmed);
+    while (iterator.hasNext()) {
+        QString rawUrl = htmlDecoded(iterator.next().captured(0));
+        while (!rawUrl.isEmpty()
+               && QStringLiteral(".,;:!?)]}").contains(rawUrl.back())) {
+            rawUrl.chop(1);
+        }
+
+        const QUrl url(rawUrl);
+        const QString scheme = url.scheme().toLower();
+        if (scheme == QStringLiteral("http") || scheme == QStringLiteral("https"))
+            return url;
+    }
+
+    return {};
+}
+
+QUrl imageUrlFromText(const QString &text)
+{
+    const QUrl url = firstHttpUrlFromText(text);
+    return isLikelyImageUrl(url) ? url : QUrl{};
+}
+
+QUrl clipboardImageUrlCandidate(const QMimeData *mimeData, const QString &plainText)
+{
+    QUrl url = imageUrlFromText(plainText);
+    if (url.isValid() || !mimeData)
+        return url;
+
+    if (mimeData->hasUrls()) {
+        const QList<QUrl> urls = mimeData->urls();
+        for (const QUrl &candidate : urls) {
+            if (isLikelyImageUrl(candidate))
+                return candidate;
+        }
+    }
+
+    if (mimeData->hasHtml()) {
+        url = imageUrlFromText(mimeData->html());
+        if (url.isValid())
+            return url;
+    }
+
+    const QStringList formats = mimeData->formats();
+    for (const QString &format : formats) {
+        const QString lowerFormat = format.toLower();
+        if (!lowerFormat.contains(QStringLiteral("url"))
+            && !lowerFormat.contains(QStringLiteral("html"))
+            && !lowerFormat.contains(QStringLiteral("chromium"))
+            && !lowerFormat.contains(QStringLiteral("text"))) {
+            continue;
+        }
+
+        url = imageUrlFromText(decodedClipboardData(mimeData->data(format)));
+        if (url.isValid())
+            return url;
+    }
+
+    return {};
+}
 }
 
 TrayController::TrayController(const QString &deviceId, const QString &deviceName, QObject *parent)
@@ -229,8 +357,13 @@ void TrayController::processClipboardChange()
             const QByteArray hash = imageHash(QImage::fromData(pngData, "PNG"));
             if (now < m_ignoreClipboardChangesUntil && hash == m_ignoredClipboardImageHash)
                 return;
-            if (!m_autoSendEnabled || hash == m_lastPublishedImageHash)
+            if (!m_autoSendEnabled)
                 return;
+            if (hash == m_lastPublishedImageHash) {
+                const QString text = m_clipboard->text().trimmed();
+                tryPublishImageUrl(mimeData, text, false, false, false);
+                return;
+            }
 
             publishClipboardImage(image, false);
             return;
@@ -252,7 +385,13 @@ void TrayController::processClipboardChange()
     if (!m_autoSendEnabled)
         return;
 
-    if (text.isEmpty() || text == m_lastPublishedContent)
+    if (text.isEmpty())
+        return;
+
+    if (tryPublishImageUrl(mimeData, text, false, false, true))
+        return;
+
+    if (text == m_lastPublishedContent)
         return;
 
     publishClipboardText(text, false);
@@ -310,7 +449,11 @@ void TrayController::sendCurrentClipboard()
         }
     }
 
-    publishClipboardText(m_clipboard->text().trimmed(), true, true);
+    const QString text = m_clipboard->text().trimmed();
+    if (tryPublishImageUrl(mimeData, text, true, true, true))
+        return;
+
+    publishClipboardText(text, true, true);
 }
 
 void TrayController::publishClipboardText(const QString &text, bool showSuccessMessage, bool force)
@@ -376,6 +519,72 @@ void TrayController::publishClipboardImage(const QImage &image, bool showSuccess
     sendEntryToServer(entry, showSuccessMessage);
 }
 
+bool TrayController::tryPublishImageUrl(const QMimeData *mimeData,
+                                        const QString &text,
+                                        bool showSuccessMessage,
+                                        bool force,
+                                        bool publishTextOnFailure)
+{
+    const QUrl imageUrl = clipboardImageUrlCandidate(mimeData, text);
+    if (imageUrl.isValid()) {
+        publishDownloadedImageUrl(imageUrl, text, showSuccessMessage, force, publishTextOnFailure);
+        return true;
+    }
+
+    return false;
+}
+
+void TrayController::publishDownloadedImageUrl(const QUrl &imageUrl,
+                                               const QString &fallbackText,
+                                               bool showSuccessMessage,
+                                               bool force,
+                                               bool publishTextOnFailure)
+{
+    const QString imageKey = QStringLiteral("image:") + imageUrl.toString(QUrl::FullyEncoded);
+    if (m_pendingImageUrlDownload == imageKey)
+        return;
+
+    m_pendingImageUrlDownload = imageKey;
+
+    QNetworkRequest request(imageUrl);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setRawHeader("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
+    request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NetworkClipboard/1.0");
+
+    QNetworkReply *reply = m_network.get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, imageKey, fallbackText, showSuccessMessage, force, publishTextOnFailure]() {
+        if (m_pendingImageUrlDownload == imageKey)
+            m_pendingImageUrlDownload.clear();
+
+        QImage image;
+        if (reply->error() == QNetworkReply::NoError)
+            image.loadFromData(reply->readAll());
+
+        reply->deleteLater();
+
+        if (!image.isNull()) {
+            const QByteArray pngData = imagePngData(image);
+            const QByteArray hash = imageHash(QImage::fromData(pngData, "PNG"));
+            if (!hash.isEmpty()) {
+                m_ignoreClipboardChangesUntil = QDateTime::currentMSecsSinceEpoch() + ClipboardIgnoreWindowMs;
+                m_ignoredClipboardContent.clear();
+                m_ignoredClipboardImageHash = hash;
+                m_clipboard->setImage(image);
+            }
+            publishClipboardImage(image, showSuccessMessage, force);
+            return;
+        }
+
+        if (showSuccessMessage) {
+            m_tray.showMessage(QStringLiteral("Network Clipboard"),
+                               QStringLiteral("Image URL could not be loaded; sending URL instead."));
+        }
+
+        if (publishTextOnFailure)
+            publishClipboardText(fallbackText, showSuccessMessage, force);
+    });
+}
+
 void TrayController::publishCurrentClipboardIfAvailable(bool force)
 {
     if (!m_autoSendEnabled || !m_serviceRunning || m_token.isEmpty() || !m_serverUrl.isValid())
@@ -390,7 +599,11 @@ void TrayController::publishCurrentClipboardIfAvailable(bool force)
         }
     }
 
-    publishClipboardText(m_clipboard->text().trimmed(), false, force);
+    const QString text = m_clipboard->text().trimmed();
+    if (tryPublishImageUrl(mimeData, text, false, force, true))
+        return;
+
+    publishClipboardText(text, false, force);
 }
 
 void TrayController::scheduleCurrentClipboardPublish(bool force)
