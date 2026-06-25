@@ -5,10 +5,12 @@
 #include <QClipboard>
 #include <QCryptographicHash>
 #include <QDesktopServices>
+#include <QDebug>
 #include <QGuiApplication>
 #include <QSettings>
 #include <QUrl>
 
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <UIKit/UIKit.h>
 
 namespace {
@@ -50,7 +52,7 @@ QByteArray networkPngData(const QImage &sourceImage)
         return {};
 
     QImage image = sourceImage;
-    for (int attempt = 0; attempt < 10; ++attempt) {
+    for (int attempt = 0; attempt < 20; ++attempt) {
         QByteArray pngData;
         QBuffer buffer(&pngData);
         if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG"))
@@ -70,21 +72,226 @@ QByteArray networkPngData(const QImage &sourceImage)
     return {};
 }
 
-QImage pasteboardImage()
+bool pasteboardMayStillProvideImage(UIPasteboard *pasteboard)
 {
-    UIPasteboard *pasteboard = UIPasteboard.generalPasteboard;
-    UIImage *image = pasteboard.image;
+    if (pasteboard == nil)
+        return false;
+    if (pasteboard.hasImages)
+        return true;
+
+    NSMutableOrderedSet<NSString *> *types = [NSMutableOrderedSet orderedSet];
+    for (NSString *type in pasteboard.pasteboardTypes)
+        [types addObject:type];
+    for (NSDictionary *item in pasteboard.items) {
+        if (![item isKindOfClass:[NSDictionary class]])
+            continue;
+        for (NSString *type in item.allKeys)
+            [types addObject:type];
+    }
+
+    for (NSString *type in types) {
+        UTType *utType = [UTType typeWithIdentifier:type];
+        if (utType == nil)
+            continue;
+        if ([utType conformsToType:UTTypeImage]
+            || [utType conformsToType:UTTypePNG]
+            || [utType conformsToType:UTTypeJPEG]
+            || [utType conformsToType:UTTypeURL]
+            || [utType conformsToType:UTTypeText]
+            || [utType conformsToType:UTTypeData]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool canAccessPasteboard()
+{
+    const UIApplicationState state = UIApplication.sharedApplication.applicationState;
+    const bool active = state == UIApplicationStateActive;
+    if (!active)
+        qInfo() << "NetworkClipboardIOS: pasteboard access skipped, applicationState=" << static_cast<int>(state);
+    return active;
+}
+
+UIPasteboard *availablePasteboard()
+{
+    if (!canAccessPasteboard())
+        return nil;
+    return UIPasteboard.generalPasteboard;
+}
+
+QImage imageFromUiImage(UIImage *image);
+QImage imageFromData(NSData *data);
+
+QImage imageFromUrl(NSURL *url)
+{
+    if (url == nil)
+        return {};
+
+    if (url.isFileURL)
+        return imageFromData([NSData dataWithContentsOfURL:url]);
+    return {};
+}
+
+QImage imageFromString(NSString *value)
+{
+    const QString text = value == nil ? QString{} : QString::fromUtf8(value.UTF8String).trimmed();
+    if (text.isEmpty())
+        return {};
+
+    if (text.startsWith(QStringLiteral("data:image/"), Qt::CaseInsensitive)) {
+        const qsizetype comma = text.indexOf(QLatin1Char(','));
+        if (comma > 0 && text.left(comma).contains(QStringLiteral(";base64"), Qt::CaseInsensitive))
+            return QImage::fromData(QByteArray::fromBase64(text.mid(comma + 1).toLatin1()));
+    }
+
+    return {};
+}
+
+QImage imageFromData(NSData *data)
+{
+    if (data == nil || data.length == 0)
+        return {};
+
+    const QByteArray bytes(
+        reinterpret_cast<const char *>(data.bytes),
+        static_cast<qsizetype>(data.length));
+    QImage image = QImage::fromData(bytes);
+    if (!image.isNull())
+        return image;
+
+    // Safari and Photos can place HEIC/WebKit-backed image data on the
+    // pasteboard. Qt may not decode every native iOS image flavor, but UIKit can.
+    return imageFromUiImage([UIImage imageWithData:data]);
+}
+
+QImage imageFromUiImage(UIImage *image)
+{
     if (image == nil)
         return {};
 
     NSData *pngData = UIImagePNGRepresentation(image);
     if (pngData == nil || pngData.length == 0)
         return {};
-
     const QByteArray bytes(
         reinterpret_cast<const char *>(pngData.bytes),
         static_cast<qsizetype>(pngData.length));
     return QImage::fromData(bytes, "PNG");
+}
+
+QImage pasteboardImage()
+{
+    UIPasteboard *pasteboard = availablePasteboard();
+    if (pasteboard == nil)
+        return {};
+
+    QImage image = imageFromUiImage(pasteboard.image);
+    if (!image.isNull())
+        return image;
+
+    for (UIImage *uiImage in pasteboard.images) {
+        image = imageFromUiImage(uiImage);
+        if (!image.isNull())
+            return image;
+    }
+
+    static NSArray<NSString *> *preferredTypes = @[
+        @"public.png",
+        @"public.jpeg",
+        @"public.jpg",
+        @"public.heic",
+        @"public.heif",
+        @"public.tiff",
+        @"com.compuserve.gif",
+        @"public.image"
+    ];
+
+    NSMutableOrderedSet<NSString *> *types = [NSMutableOrderedSet orderedSet];
+    for (NSString *type in preferredTypes)
+        [types addObject:type];
+    for (NSString *type in pasteboard.pasteboardTypes)
+        [types addObject:type];
+    for (NSDictionary *item in pasteboard.items) {
+        if (![item isKindOfClass:[NSDictionary class]])
+            continue;
+        for (NSString *type in item.allKeys)
+            [types addObject:type];
+    }
+
+    for (NSDictionary *item in pasteboard.items) {
+        if (![item isKindOfClass:[NSDictionary class]])
+            continue;
+
+        for (NSString *type in types) {
+            id value = item[type];
+            if ([value isKindOfClass:[UIImage class]]) {
+                image = imageFromUiImage(static_cast<UIImage *>(value));
+            } else if ([value isKindOfClass:[NSData class]]) {
+                image = imageFromData(static_cast<NSData *>(value));
+            } else if ([value isKindOfClass:[NSURL class]]) {
+                image = imageFromUrl(static_cast<NSURL *>(value));
+            } else if ([value isKindOfClass:[NSString class]]) {
+                image = imageFromString(static_cast<NSString *>(value));
+            } else {
+                image = {};
+            }
+
+            if (!image.isNull())
+                return image;
+        }
+    }
+
+    for (NSString *type in types) {
+        UTType *utType = [UTType typeWithIdentifier:type];
+        const bool isImageType = utType == nil
+            || [utType conformsToType:UTTypeImage]
+            || [utType conformsToType:UTTypePNG]
+            || [utType conformsToType:UTTypeJPEG];
+
+        if (isImageType) {
+            image = imageFromData([pasteboard dataForPasteboardType:type]);
+            if (!image.isNull())
+                return image;
+        } else {
+            continue;
+        }
+
+        NSArray *dataItems = [pasteboard dataForPasteboardType:type inItemSet:nil];
+        for (NSData *data in dataItems) {
+            if (isImageType) {
+                image = imageFromData(data);
+                if (!image.isNull())
+                    return image;
+            }
+        }
+
+        NSArray *values = [pasteboard valuesForPasteboardType:type inItemSet:nil];
+        for (id value in values) {
+            if ([value isKindOfClass:[UIImage class]]) {
+                image = imageFromUiImage(static_cast<UIImage *>(value));
+            } else if ([value isKindOfClass:[NSData class]]) {
+                image = imageFromData(static_cast<NSData *>(value));
+            } else if ([value isKindOfClass:[NSURL class]]) {
+                image = imageFromUrl(static_cast<NSURL *>(value));
+            } else if ([value isKindOfClass:[NSString class]]) {
+                image = imageFromString(static_cast<NSString *>(value));
+            } else {
+                image = {};
+            }
+
+            if (!image.isNull())
+                return image;
+        }
+    }
+
+    QStringList typeNames;
+    for (NSString *type in types)
+        typeNames.append(QString::fromUtf8(type.UTF8String));
+    qInfo() << "NetworkClipboardIOS: no pasteboard image decoded"
+            << "hasImages=" << pasteboard.hasImages
+            << "types=" << typeNames;
+    return {};
 }
 
 constexpr auto PasteSettingsOfferSeenKey = "pasteSettingsOfferSeen";
@@ -109,6 +316,8 @@ bool ClipboardBridge::shouldOfferPasteSettings() const
 QString ClipboardBridge::text() const
 {
     const QString text = withUnixLineEndings(QGuiApplication::clipboard()->text());
+    qInfo() << "NetworkClipboardIOS: text() read length=" << text.length()
+            << "preview=" << text.left(180);
     return isPasteboardAuthorizationError(text) ? QString{} : text;
 }
 
@@ -119,24 +328,43 @@ void ClipboardBridge::setText(const QString &text)
 
 bool ClipboardBridge::hasImage() const
 {
+    if (!canAccessPasteboard()) {
+        qInfo() << "NetworkClipboardIOS: hasImage() -> false, pasteboard unavailable";
+        return false;
+    }
     updateImageCache();
+    qInfo() << "NetworkClipboardIOS: hasImage() ->" << !m_cachedImage.isNull();
     return !m_cachedImage.isNull();
 }
 
 QString ClipboardBridge::imageFingerprint() const
 {
+    if (!canAccessPasteboard()) {
+        qInfo() << "NetworkClipboardIOS: imageFingerprint() empty, pasteboard unavailable";
+        return {};
+    }
     updateImageCache();
+    qInfo() << "NetworkClipboardIOS: imageFingerprint() length=" << m_cachedImageFingerprint.length();
     return m_cachedImageFingerprint;
 }
 
 QString ClipboardBridge::imageBase64() const
 {
+    if (!canAccessPasteboard()) {
+        qInfo() << "NetworkClipboardIOS: imageBase64() empty, pasteboard unavailable";
+        return {};
+    }
     updateImageCache();
+    qInfo() << "NetworkClipboardIOS: imageBase64() length=" << m_cachedImageBase64.length();
     return m_cachedImageBase64;
 }
 
 bool ClipboardBridge::setImageBase64(const QString &base64)
 {
+    UIPasteboard *pasteboard = availablePasteboard();
+    if (pasteboard == nil)
+        return false;
+
     const QByteArray pngData = QByteArray::fromBase64(base64.toLatin1());
     const QImage image = QImage::fromData(pngData, "PNG");
     if (image.isNull())
@@ -148,8 +376,8 @@ bool ClipboardBridge::setImageBase64(const QString &base64)
     if (uiImage == nil)
         return false;
 
-    UIPasteboard.generalPasteboard.image = uiImage;
-    m_cachedPasteboardChangeCount = UIPasteboard.generalPasteboard.changeCount;
+    pasteboard.image = uiImage;
+    m_cachedPasteboardChangeCount = pasteboard.changeCount;
     m_cachedImage = image;
     m_cachedImageFingerprint = QString::fromLatin1(imageFingerprintBytes(image).toHex());
     m_cachedImageBase64 = QString::fromLatin1(pngData.toBase64());
@@ -174,18 +402,35 @@ void ClipboardBridge::openAppSettings() const
 
 void ClipboardBridge::updateImageCache() const
 {
-    UIPasteboard *pasteboard = UIPasteboard.generalPasteboard;
-    const qint64 changeCount = pasteboard.changeCount;
-    if (m_cachedPasteboardChangeCount == changeCount)
+    UIPasteboard *pasteboard = availablePasteboard();
+    if (pasteboard == nil) {
+        qInfo() << "NetworkClipboardIOS: updateImageCache skipped, pasteboard unavailable";
         return;
+    }
+
+    const qint64 changeCount = pasteboard.changeCount;
+    if (m_cachedPasteboardChangeCount == changeCount) {
+        qInfo() << "NetworkClipboardIOS: updateImageCache unchanged changeCount=" << changeCount
+                << "cachedImage=" << !m_cachedImage.isNull();
+        return;
+    }
+
+    qInfo() << "NetworkClipboardIOS: updateImageCache reading changeCount=" << changeCount
+            << "previous=" << m_cachedPasteboardChangeCount
+            << "hasImages=" << pasteboard.hasImages
+            << "types=" << pasteboard.pasteboardTypes;
 
     m_cachedImage = pasteboardImage();
     m_cachedImageFingerprint.clear();
     m_cachedImageBase64.clear();
     if (m_cachedImage.isNull()) {
         // Photos may publish an item provider before the actual image data is
-        // available. Do not cache that temporary empty result.
-        if (!pasteboard.hasImages)
+        // available. Safari may also report only a transient text/provider
+        // representation while the user is switching back to the app. Do not
+        // cache those negative reads; let the QML retry timer ask again.
+        const bool mayStillProvideImage = pasteboardMayStillProvideImage(pasteboard);
+        qInfo() << "NetworkClipboardIOS: updateImageCache no image, mayStillProvideImage=" << mayStillProvideImage;
+        if (!mayStillProvideImage)
             m_cachedPasteboardChangeCount = changeCount;
         return;
     }
@@ -195,4 +440,7 @@ void ClipboardBridge::updateImageCache() const
     const QByteArray pngData = networkPngData(m_cachedImage);
     if (!pngData.isEmpty())
         m_cachedImageBase64 = QString::fromLatin1(pngData.toBase64());
+    qInfo() << "NetworkClipboardIOS: updateImageCache image decoded size=" << m_cachedImage.size()
+            << "fingerprintLength=" << m_cachedImageFingerprint.length()
+            << "base64Length=" << m_cachedImageBase64.length();
 }

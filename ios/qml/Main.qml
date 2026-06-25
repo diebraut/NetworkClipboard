@@ -28,8 +28,8 @@ ApplicationWindow {
     }
 
     function syncClipboardToPreview() {
-        if (networkClipboard.serverActive && waitingForServerText)
-            return
+        if (Qt.platform.os === "ios")
+            console.log("NetworkClipboardIOS: syncClipboardToPreview retries=", clipboardSyncRetries)
 
         if (localClipboard.hasImage()) {
             const fingerprint = localClipboard.imageFingerprint()
@@ -51,6 +51,8 @@ ApplicationWindow {
             if (networkClipboard.serverActive
                     && !imageSendInFlight
                     && fingerprint !== lastAutoSentImageFingerprint) {
+                if (Qt.platform.os === "ios")
+                    console.log("NetworkClipboardIOS: sending image fingerprint=", fingerprint, "base64Length=", base64.length)
                 localPublishGuardUntil = Date.now() + 3000
                 pendingAutoSendImageFingerprint = fingerprint
                 imageSendInFlight = true
@@ -58,6 +60,9 @@ ApplicationWindow {
             }
             return
         }
+
+        if (networkClipboard.serverActive && waitingForServerText)
+            return
 
         const text = localClipboard.text()
         if (text.trim().length === 0)
@@ -73,6 +78,8 @@ ApplicationWindow {
         rawPreviewImageBase64 = ""
 
         if (networkClipboard.serverActive && text !== lastAutoSentText) {
+            if (Qt.platform.os === "ios")
+                console.log("NetworkClipboardIOS: sending text length=", text.length, "preview=", text.slice(0, 180))
             localPublishGuardUntil = Date.now() + 3000
             lastAutoSentText = text
             networkClipboard.sendText(text, deviceName())
@@ -80,7 +87,8 @@ ApplicationWindow {
     }
 
     function scheduleClipboardSync() {
-        clipboardSyncRetries = 12
+        clipboardSyncRetries = Qt.platform.os === "ios" ? 20 : 12
+        clipboardSyncTimer.interval = Qt.platform.os === "ios" ? 700 : 350
         clipboardSyncTimer.restart()
     }
 
@@ -155,10 +163,9 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        scheduleClipboardSync()
         if (networkClipboard.serverActive)
             refreshNetworkClipboard(true)
-        else
-            scheduleClipboardSync()
         if (Qt.platform.os === "ios" && localClipboard.shouldOfferPasteSettings)
             pasteSettingsDialog.open()
     }
@@ -168,6 +175,9 @@ ApplicationWindow {
         interval: 350
         repeat: false
         onTriggered: {
+            interval = Qt.platform.os === "ios" ? 700 : 350
+            if (Qt.platform.os === "ios")
+                console.log("NetworkClipboardIOS: clipboardSyncTimer triggered retries=", clipboardSyncRetries)
             syncClipboardToPreview()
             if (clipboardSyncRetries > 0) {
                 --clipboardSyncRetries
