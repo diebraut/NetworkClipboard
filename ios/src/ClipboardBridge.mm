@@ -348,6 +348,14 @@ QString ClipboardBridge::imageFingerprint() const
     return m_cachedImageFingerprint;
 }
 
+QString ClipboardBridge::imageFingerprintFromBase64(const QString &base64) const
+{
+    const QImage image = QImage::fromData(QByteArray::fromBase64(base64.toLatin1()), "PNG");
+    if (image.isNull())
+        return {};
+    return QString::fromLatin1(imageFingerprintBytes(image).toHex());
+}
+
 QString ClipboardBridge::imageBase64() const
 {
     if (!canAccessPasteboard()) {

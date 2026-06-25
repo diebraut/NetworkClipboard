@@ -1,15 +1,18 @@
 package org.qtproject.example.NetworkClipboardAndroidServer;
 
 import android.content.ClipData;
+import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.net.Uri;
+import android.os.Build;
 import android.util.Base64;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.security.MessageDigest;
 
 public final class ImageClipboardHelper
 {
@@ -26,20 +29,43 @@ public final class ImageClipboardHelper
 
     public static String imageKey(Context context)
     {
-        Uri uri = clipboardImageUri(context);
-        return uri == null ? "" : uri.toString();
+        byte[] data = clipboardImageBytes(context);
+        if (data == null || data.length == 0)
+            return "";
+
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(data);
+            StringBuilder builder = new StringBuilder();
+            builder.append(clipboardMarker(context)).append(':');
+            builder.append(data.length).append(':');
+            for (byte value : hash)
+                builder.append(String.format("%02x", value & 0xff));
+            return builder.toString();
+        } catch (Exception ignored) {
+            return String.valueOf(data.length);
+        }
     }
 
     public static String imageBase64(Context context)
     {
+        byte[] data = clipboardImageBytes(context);
+        if (data == null || data.length == 0)
+            return "";
+
+        return Base64.encodeToString(data, Base64.NO_WRAP);
+    }
+
+    private static byte[] clipboardImageBytes(Context context)
+    {
         Uri uri = clipboardImageUri(context);
         if (uri == null)
-            return "";
+            return null;
 
         try (InputStream input = context.getContentResolver().openInputStream(uri);
              ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             if (input == null)
-                return "";
+                return null;
 
             byte[] buffer = new byte[32 * 1024];
             int total = 0;
@@ -47,12 +73,12 @@ public final class ImageClipboardHelper
             while ((read = input.read(buffer)) >= 0) {
                 total += read;
                 if (total > MAX_IMAGE_BYTES)
-                    return "";
+                    return null;
                 output.write(buffer, 0, read);
             }
-            return Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
+            return output.toByteArray();
         } catch (Exception ignored) {
-            return "";
+            return null;
         }
     }
 
@@ -114,6 +140,27 @@ public final class ImageClipboardHelper
             return uri;
         } catch (Exception ignored) {
             return null;
+        }
+    }
+
+    private static String clipboardMarker(Context context)
+    {
+        try {
+            ClipboardManager clipboard =
+                (ClipboardManager)context.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null || !clipboard.hasPrimaryClip())
+                return "";
+
+            ClipDescription description = clipboard.getPrimaryClipDescription();
+            String timestamp = "";
+            if (description != null && Build.VERSION.SDK_INT >= 26)
+                timestamp = String.valueOf(description.getTimestamp());
+
+            ClipData clip = clipboard.getPrimaryClip();
+            Uri uri = clip != null && clip.getItemCount() > 0 ? clip.getItemAt(0).getUri() : null;
+            return timestamp + ":" + (uri == null ? "" : uri.toString());
+        } catch (Exception ignored) {
+            return "";
         }
     }
 }

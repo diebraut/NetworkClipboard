@@ -16,6 +16,7 @@ ApplicationWindow {
     property string observedLocalImageFingerprint: ""
     property string lastAutoSentImageFingerprint: ""
     property string pendingAutoSendImageFingerprint: ""
+    property string recentNetworkImageFingerprint: ""
     property bool imageSendInFlight: false
     property bool forceNextNetworkText: false
     property bool waitingForServerText: false
@@ -50,6 +51,7 @@ ApplicationWindow {
 
             if (networkClipboard.serverActive
                     && !imageSendInFlight
+                    && fingerprint !== recentNetworkImageFingerprint
                     && fingerprint !== lastAutoSentImageFingerprint) {
                 if (Qt.platform.os === "ios")
                     console.log("NetworkClipboardIOS: sending image fingerprint=", fingerprint, "base64Length=", base64.length)
@@ -238,11 +240,28 @@ ApplicationWindow {
             pendingAutoSendImageFingerprint = ""
             imageSendInFlight = false
 
+            const incomingFingerprint = localClipboard.imageFingerprintFromBase64(base64)
+            const alreadyLocalImage = incomingFingerprint.length > 0
+                && (incomingFingerprint === observedLocalImageFingerprint
+                    || incomingFingerprint === recentNetworkImageFingerprint
+                    || incomingFingerprint === lastAutoSentImageFingerprint)
+            if (alreadyLocalImage) {
+                observedLocalImageFingerprint = incomingFingerprint
+                recentNetworkImageFingerprint = incomingFingerprint
+                lastAutoSentImageFingerprint = incomingFingerprint
+                observedLocalClipboardText = ""
+                lastAutoSentText = ""
+                rawPreviewText = ""
+                rawPreviewImageBase64 = base64
+                return
+            }
+
             if (!localClipboard.setImageBase64(base64))
                 return
 
             const fingerprint = localClipboard.imageFingerprint()
             observedLocalImageFingerprint = fingerprint
+            recentNetworkImageFingerprint = fingerprint
             lastAutoSentImageFingerprint = fingerprint
             observedLocalClipboardText = ""
             lastAutoSentText = ""
@@ -274,6 +293,7 @@ ApplicationWindow {
                 lastAutoSentImageFingerprint = ""
                 forceNextNetworkText = false
                 pendingAutoSendImageFingerprint = ""
+                recentNetworkImageFingerprint = ""
                 imageSendInFlight = false
             }
         }

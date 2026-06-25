@@ -17,9 +17,11 @@ ApplicationWindow {
     property string observedLocalImageFingerprint: ""
     property string lastAutoSentImageFingerprint: ""
     property string pendingAutoSendImageFingerprint: ""
+    property string recentLocalImageFingerprint: ""
     property bool autoSendInFlight: false
     property bool forceNextNetworkText: false
     property bool waitingForServerText: false
+    property double localPublishGuardUntil: 0
     readonly property bool compactLayout: width < 520
 
     function deviceName() {
@@ -36,7 +38,10 @@ ApplicationWindow {
             if (base64.length === 0)
                 return
 
+            const networkOriginImage = localClipboard.imageFromNetworkClipboard()
             if (fingerprint !== observedLocalImageFingerprint) {
+                localPublishGuardUntil = Date.now() + 8000
+                recentLocalImageFingerprint = fingerprint
                 observedLocalImageFingerprint = fingerprint
                 rawPreviewText = ""
                 rawPreviewImageBase64 = base64
@@ -47,6 +52,7 @@ ApplicationWindow {
             if (networkClipboard.serverActive
                     && !waitingForServerText
                     && !autoSendInFlight
+                    && !networkOriginImage
                     && fingerprint !== lastAutoSentImageFingerprint) {
                 pendingAutoSendImageFingerprint = fingerprint
                 autoSendInFlight = true
@@ -56,13 +62,21 @@ ApplicationWindow {
         }
 
         const text = localClipboard.text()
-        if (text.trim().length === 0)
+        if (text.trim().length === 0) {
+            if (rawPreviewImageBase64.length > 0) {
+                rawPreviewText = ""
+                rawPreviewImageBase64 = ""
+                observedLocalImageFingerprint = ""
+            }
             return
+        }
 
         if (text === observedLocalClipboardText)
             return
 
         observedLocalClipboardText = text
+        localPublishGuardUntil = Date.now() + 4000
+        recentLocalImageFingerprint = ""
         observedLocalImageFingerprint = ""
         lastAutoSentImageFingerprint = ""
 
@@ -90,6 +104,9 @@ ApplicationWindow {
     }
 
     function refreshNetworkClipboard(force) {
+        if (!force && (autoSendInFlight || Date.now() < localPublishGuardUntil))
+            return
+
         if (appInForeground() && networkClipboard.serverActive) {
             if (force) {
                 forceNextNetworkText = true
@@ -194,6 +211,10 @@ ApplicationWindow {
         target: networkClipboard
         function onLatestReceived(text) {
             const forceUpdate = forceNextNetworkText
+            if (!forceUpdate && (autoSendInFlight || Date.now() < localPublishGuardUntil))
+                return
+
+            localPublishGuardUntil = 0
             forceNextNetworkText = false
             waitingForServerText = false
             serverReadGuardTimer.stop()
@@ -212,6 +233,19 @@ ApplicationWindow {
         }
 
         function onLatestImageReceived(base64) {
+            const forceUpdate = forceNextNetworkText
+            const incomingFingerprint = localClipboard.imageFingerprintFromBase64(base64)
+            if (!forceUpdate && (autoSendInFlight || Date.now() < localPublishGuardUntil))
+                return
+            if (!forceUpdate
+                    && recentLocalImageFingerprint.length > 0
+                    && incomingFingerprint.length > 0
+                    && incomingFingerprint !== recentLocalImageFingerprint
+                    && Date.now() < localPublishGuardUntil) {
+                return
+            }
+
+            localPublishGuardUntil = 0
             forceNextNetworkText = false
             waitingForServerText = false
             serverReadGuardTimer.stop()
@@ -219,11 +253,27 @@ ApplicationWindow {
             pendingAutoSendImageFingerprint = ""
             autoSendInFlight = false
 
+            const alreadyLocalImage = incomingFingerprint.length > 0
+                && (incomingFingerprint === observedLocalImageFingerprint
+                    || incomingFingerprint === recentLocalImageFingerprint
+                    || incomingFingerprint === lastAutoSentImageFingerprint)
+            if (alreadyLocalImage) {
+                observedLocalImageFingerprint = incomingFingerprint
+                recentLocalImageFingerprint = incomingFingerprint
+                lastAutoSentImageFingerprint = incomingFingerprint
+                lastAutoSentText = ""
+                observedLocalClipboardText = ""
+                rawPreviewText = ""
+                rawPreviewImageBase64 = base64
+                return
+            }
+
             if (!localClipboard.setImageBase64(base64))
                 return
 
             const fingerprint = localClipboard.imageFingerprint()
             observedLocalImageFingerprint = fingerprint
+            recentLocalImageFingerprint = fingerprint
             lastAutoSentImageFingerprint = fingerprint
             lastAutoSentText = ""
             observedLocalClipboardText = ""
@@ -232,6 +282,8 @@ ApplicationWindow {
         }
 
         function onTextSent(text) {
+            localPublishGuardUntil = Date.now() + 1500
+            recentLocalImageFingerprint = ""
             lastAutoSentText = text
             lastAutoSentImageFingerprint = ""
             if (pendingAutoSendText === text)
@@ -240,12 +292,15 @@ ApplicationWindow {
         }
 
         function onTextSendFailed(text) {
+            localPublishGuardUntil = 0
             if (pendingAutoSendText === text)
                 pendingAutoSendText = ""
             autoSendInFlight = false
         }
 
         function onImageSent(fingerprint) {
+            localPublishGuardUntil = Date.now() + 6000
+            recentLocalImageFingerprint = fingerprint
             lastAutoSentImageFingerprint = fingerprint
             lastAutoSentText = ""
             if (pendingAutoSendImageFingerprint === fingerprint)
@@ -254,6 +309,8 @@ ApplicationWindow {
         }
 
         function onImageSendFailed(fingerprint) {
+            localPublishGuardUntil = 0
+            recentLocalImageFingerprint = ""
             if (pendingAutoSendImageFingerprint === fingerprint)
                 pendingAutoSendImageFingerprint = ""
             autoSendInFlight = false
@@ -263,12 +320,13 @@ ApplicationWindow {
             if (networkClipboard.serverActive) {
                 waitingForServerText = false
                 forceNextNetworkText = false
-                autoSendInFlight = false
                 scheduleClipboardSync()
             } else {
                 lastAutoSentText = ""
                 forceNextNetworkText = false
                 waitingForServerText = false
+                localPublishGuardUntil = 0
+                recentLocalImageFingerprint = ""
                 pendingAutoSendText = ""
                 pendingAutoSendImageFingerprint = ""
                 autoSendInFlight = false

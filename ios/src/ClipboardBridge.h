@@ -18,6 +18,7 @@ public:
     Q_INVOKABLE void setText(const QString &text);
     Q_INVOKABLE bool hasImage() const;
     Q_INVOKABLE QString imageFingerprint() const;
+    Q_INVOKABLE QString imageFingerprintFromBase64(const QString &base64) const;
     Q_INVOKABLE QString imageBase64() const;
     Q_INVOKABLE bool setImageBase64(const QString &base64);
     Q_INVOKABLE void markPasteSettingsOfferSeen();

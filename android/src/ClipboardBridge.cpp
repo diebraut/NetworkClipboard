@@ -4,6 +4,7 @@
 #include <QByteArrayView>
 #include <QClipboard>
 #include <QCryptographicHash>
+#include <QDebug>
 #include <QGuiApplication>
 #include <QImage>
 #include <QMimeData>
@@ -138,6 +139,9 @@ bool ClipboardBridge::hasImage() const
         context.object());
     const QString key = result.toString();
     if (key != m_cachedImageKey) {
+        qInfo() << "ClipboardBridge image key changed"
+                << "old" << m_cachedImageKey.left(80)
+                << "new" << key.left(80);
         m_imageCacheValid = false;
         m_cachedImage = {};
         m_cachedImageKey = key;
@@ -157,10 +161,35 @@ QString ClipboardBridge::imageFingerprint() const
     return m_cachedImageFingerprint;
 }
 
+QString ClipboardBridge::imageFingerprintFromBase64(const QString &base64) const
+{
+    const QImage image = QImage::fromData(QByteArray::fromBase64(base64.toLatin1()), "PNG");
+    if (image.isNull())
+        return {};
+    return QString::fromLatin1(imageFingerprintBytes(image).toHex());
+}
+
 QString ClipboardBridge::imageBase64() const
 {
     updateImageCache();
     return m_cachedImageBase64;
+}
+
+bool ClipboardBridge::imageFromNetworkClipboard() const
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = androidContext();
+    if (!context.isValid())
+        return false;
+
+    return QJniObject::callStaticMethod<jboolean>(
+        "org/qtproject/example/NetworkClipboardAndroid/ImageClipboardHelper",
+        "isNetworkClipboardImage",
+        "(Landroid/content/Context;)Z",
+        context.object());
+#else
+    return false;
+#endif
 }
 
 bool ClipboardBridge::setImageBase64(const QString &base64)
@@ -209,17 +238,25 @@ void ClipboardBridge::updateImageCache() const
 
 #ifdef Q_OS_ANDROID
     const QString sourceBase64 = androidClipboardImageBase64();
-    if (sourceBase64.isEmpty())
+    if (sourceBase64.isEmpty()) {
+        qInfo() << "ClipboardBridge updateImageCache no Android image data";
         return;
+    }
+    qInfo() << "ClipboardBridge updateImageCache Android base64" << sourceBase64.length();
     m_cachedImage = QImage::fromData(QByteArray::fromBase64(sourceBase64.toLatin1()));
 #else
     m_cachedImage = QGuiApplication::clipboard()->image();
 #endif
-    if (m_cachedImage.isNull())
+    if (m_cachedImage.isNull()) {
+        qInfo() << "ClipboardBridge updateImageCache decoded image is null";
         return;
+    }
 
     m_imageCacheValid = true;
     m_cachedImageFingerprint = QString::fromLatin1(imageFingerprintBytes(m_cachedImage).toHex());
+    qInfo() << "ClipboardBridge updateImageCache image"
+            << m_cachedImage.size()
+            << "fingerprint" << m_cachedImageFingerprint.left(16);
     const QByteArray pngData = networkPngData(m_cachedImage);
     if (!pngData.isEmpty())
         m_cachedImageBase64 = QString::fromLatin1(pngData.toBase64());
