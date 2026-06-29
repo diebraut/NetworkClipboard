@@ -18,6 +18,7 @@ ApplicationWindow {
     property string pendingAutoSendImageFingerprint: ""
     property string recentNetworkImageFingerprint: ""
     property bool imageSendInFlight: false
+    property double observedPasteboardChangeCount: -1
     property bool forceNextNetworkText: false
     property bool waitingForServerText: false
     property double localPublishGuardUntil: 0
@@ -32,6 +33,18 @@ ApplicationWindow {
         if (Qt.platform.os === "ios")
             console.log("NetworkClipboardIOS: syncClipboardToPreview retries=", clipboardSyncRetries)
 
+        let pasteboardChangeCount = -1
+        if (Qt.platform.os === "ios") {
+            pasteboardChangeCount = localClipboard.pasteboardChangeCount()
+            if (pasteboardChangeCount >= 0
+                    && pasteboardChangeCount === observedPasteboardChangeCount
+                    && !pendingAutoSendImageFingerprint
+                    && !imageSendInFlight) {
+                clipboardSyncRetries = 0
+                return
+            }
+        }
+
         if (localClipboard.hasImage()) {
             const fingerprint = localClipboard.imageFingerprint()
             if (fingerprint.length === 0)
@@ -40,6 +53,8 @@ ApplicationWindow {
             const base64 = localClipboard.imageBase64()
             if (base64.length === 0)
                 return
+
+            observedPasteboardChangeCount = pasteboardChangeCount
 
             if (fingerprint !== observedLocalImageFingerprint) {
                 observedLocalImageFingerprint = fingerprint
@@ -60,6 +75,7 @@ ApplicationWindow {
                 imageSendInFlight = true
                 networkClipboard.sendImage(base64, fingerprint, deviceName())
             }
+            clipboardSyncRetries = 0
             return
         }
 
@@ -70,9 +86,13 @@ ApplicationWindow {
         if (text.trim().length === 0)
             return
 
-        if (text === observedLocalClipboardText)
+        if (text === observedLocalClipboardText) {
+            observedPasteboardChangeCount = pasteboardChangeCount
+            clipboardSyncRetries = 0
             return
+        }
 
+        observedPasteboardChangeCount = pasteboardChangeCount
         observedLocalClipboardText = text
         observedLocalImageFingerprint = ""
         lastAutoSentImageFingerprint = ""
@@ -86,6 +106,7 @@ ApplicationWindow {
             lastAutoSentText = text
             networkClipboard.sendText(text, deviceName())
         }
+        clipboardSyncRetries = 0
     }
 
     function scheduleClipboardSync() {
@@ -227,6 +248,7 @@ ApplicationWindow {
             lastAutoSentText = text
             lastAutoSentImageFingerprint = ""
             localClipboard.setText(text)
+            observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
             rawPreviewText = text
             rawPreviewImageBase64 = ""
             observedLocalImageFingerprint = ""
@@ -260,6 +282,7 @@ ApplicationWindow {
                 return
 
             const fingerprint = localClipboard.imageFingerprint()
+            observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
             observedLocalImageFingerprint = fingerprint
             recentNetworkImageFingerprint = fingerprint
             lastAutoSentImageFingerprint = fingerprint
@@ -286,7 +309,8 @@ ApplicationWindow {
 
         function onServerActiveChanged() {
             if (networkClipboard.serverActive) {
-                lastAutoSentText = localClipboard.text()
+                observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
+                lastAutoSentText = observedLocalClipboardText
                 refreshNetworkClipboard(true)
             } else {
                 lastAutoSentText = ""

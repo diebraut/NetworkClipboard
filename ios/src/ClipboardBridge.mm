@@ -313,6 +313,14 @@ bool ClipboardBridge::shouldOfferPasteSettings() const
     return !settings.value(QLatin1String(PasteSettingsOfferSeenKey), false).toBool();
 }
 
+qint64 ClipboardBridge::pasteboardChangeCount() const
+{
+    if (!canAccessPasteboard())
+        return -1;
+
+    return UIPasteboard.generalPasteboard.changeCount;
+}
+
 QString ClipboardBridge::text() const
 {
     const QString text = withUnixLineEndings(QGuiApplication::clipboard()->text());

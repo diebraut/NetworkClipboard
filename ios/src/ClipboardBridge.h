@@ -14,6 +14,7 @@ public:
 
     bool shouldOfferPasteSettings() const;
 
+    Q_INVOKABLE qint64 pasteboardChangeCount() const;
     Q_INVOKABLE QString text() const;
     Q_INVOKABLE void setText(const QString &text);
     Q_INVOKABLE bool hasImage() const;
