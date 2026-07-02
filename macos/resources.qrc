@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="net-copy-paste.png">../icons/net-copy-paste.png</file>
+    </qresource>
+</RCC>

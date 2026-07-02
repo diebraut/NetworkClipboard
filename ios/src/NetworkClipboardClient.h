@@ -57,6 +57,7 @@ public:
                                const QString &deviceName);
     Q_INVOKABLE void getLatest();
     Q_INVOKABLE void pollLatest();
+    Q_INVOKABLE void forcePollLatest();
     Q_INVOKABLE void discoverServer();
     Q_INVOKABLE void connectToServerUrl(const QString &serverUrl);
     Q_INVOKABLE void selectServer(int index);
@@ -101,7 +102,8 @@ private:
     void setServerActive(bool active);
     void updateServerName(const QString &serverName, const QString &serverUrl);
     void setStatus(const QString &status);
-    void handleClipboardEntry(const QJsonObject &object);
+    void pollLatest(bool force);
+    void handleClipboardEntry(const QJsonObject &object, bool force = false);
 
     QNetworkAccessManager m_network;
     QTimer m_serverCheckTimer;

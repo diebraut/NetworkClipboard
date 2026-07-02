@@ -13,6 +13,9 @@ ApplicationWindow {
     property string observedLocalClipboardText: ""
     property string rawPreviewText: ""
     property string rawPreviewImageBase64: ""
+    property string rawPreviewImageSource: ""
+    property string pendingPasteboardImageBase64: ""
+    property string pendingPasteboardImageFingerprint: ""
     property string observedLocalImageFingerprint: ""
     property string lastAutoSentImageFingerprint: ""
     property string pendingAutoSendImageFingerprint: ""
@@ -30,9 +33,6 @@ ApplicationWindow {
     }
 
     function syncClipboardToPreview() {
-        if (Qt.platform.os === "ios")
-            console.log("NetworkClipboardIOS: syncClipboardToPreview retries=", clipboardSyncRetries)
-
         let pasteboardChangeCount = -1
         if (Qt.platform.os === "ios") {
             pasteboardChangeCount = localClipboard.pasteboardChangeCount()
@@ -62,14 +62,14 @@ ApplicationWindow {
                 lastAutoSentText = ""
                 rawPreviewText = ""
                 rawPreviewImageBase64 = base64
+                rawPreviewImageSource = localClipboard.setPreviewImageBase64(base64)
+                imagePreview.triedDataUrlFallback = false
             }
 
             if (networkClipboard.serverActive
                     && !imageSendInFlight
                     && fingerprint !== recentNetworkImageFingerprint
                     && fingerprint !== lastAutoSentImageFingerprint) {
-                if (Qt.platform.os === "ios")
-                    console.log("NetworkClipboardIOS: sending image fingerprint=", fingerprint, "base64Length=", base64.length)
                 localPublishGuardUntil = Date.now() + 3000
                 pendingAutoSendImageFingerprint = fingerprint
                 imageSendInFlight = true
@@ -96,12 +96,16 @@ ApplicationWindow {
         observedLocalClipboardText = text
         observedLocalImageFingerprint = ""
         lastAutoSentImageFingerprint = ""
+        recentNetworkImageFingerprint = ""
         rawPreviewText = text
         rawPreviewImageBase64 = ""
+        rawPreviewImageSource = ""
+        pendingPasteboardImageBase64 = ""
+        pendingPasteboardImageFingerprint = ""
+        deferredPasteboardImageTimer.stop()
+        localClipboard.clearPreviewImage()
 
         if (networkClipboard.serverActive && text !== lastAutoSentText) {
-            if (Qt.platform.os === "ios")
-                console.log("NetworkClipboardIOS: sending text length=", text.length, "preview=", text.slice(0, 180))
             localPublishGuardUntil = Date.now() + 3000
             lastAutoSentText = text
             networkClipboard.sendText(text, deviceName())
@@ -129,7 +133,10 @@ ApplicationWindow {
                 waitingForServerText = true
                 serverReadGuardTimer.restart()
             }
-            networkClipboard.pollLatest()
+            if (force)
+                networkClipboard.forcePollLatest()
+            else
+                networkClipboard.pollLatest()
         }
     }
 
@@ -199,8 +206,6 @@ ApplicationWindow {
         repeat: false
         onTriggered: {
             interval = Qt.platform.os === "ios" ? 700 : 350
-            if (Qt.platform.os === "ios")
-                console.log("NetworkClipboardIOS: clipboardSyncTimer triggered retries=", clipboardSyncRetries)
             syncClipboardToPreview()
             if (clipboardSyncRetries > 0) {
                 --clipboardSyncRetries
@@ -214,6 +219,29 @@ ApplicationWindow {
         interval: 1500
         repeat: false
         onTriggered: waitingForServerText = false
+    }
+
+    Timer {
+        id: deferredPasteboardImageTimer
+        interval: 150
+        repeat: false
+        onTriggered: {
+            if (pendingPasteboardImageBase64.length === 0)
+                return
+
+            const base64 = pendingPasteboardImageBase64
+            const fingerprint = pendingPasteboardImageFingerprint
+            pendingPasteboardImageBase64 = ""
+            pendingPasteboardImageFingerprint = ""
+
+            if (!localClipboard.setImageBase64(base64))
+                return
+
+            observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
+            observedLocalImageFingerprint = fingerprint
+            recentNetworkImageFingerprint = fingerprint
+            lastAutoSentImageFingerprint = fingerprint
+        }
     }
 
     Connections {
@@ -251,7 +279,13 @@ ApplicationWindow {
             observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
             rawPreviewText = text
             rawPreviewImageBase64 = ""
+            rawPreviewImageSource = ""
+            pendingPasteboardImageBase64 = ""
+            pendingPasteboardImageFingerprint = ""
+            deferredPasteboardImageTimer.stop()
+            localClipboard.clearPreviewImage()
             observedLocalImageFingerprint = ""
+            recentNetworkImageFingerprint = ""
         }
 
         function onLatestImageReceived(base64) {
@@ -275,21 +309,24 @@ ApplicationWindow {
                 lastAutoSentText = ""
                 rawPreviewText = ""
                 rawPreviewImageBase64 = base64
+                rawPreviewImageSource = localClipboard.setPreviewImageBase64(base64)
+                imagePreview.triedDataUrlFallback = false
                 return
             }
 
-            if (!localClipboard.setImageBase64(base64))
-                return
-
-            const fingerprint = localClipboard.imageFingerprint()
-            observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
-            observedLocalImageFingerprint = fingerprint
-            recentNetworkImageFingerprint = fingerprint
-            lastAutoSentImageFingerprint = fingerprint
             observedLocalClipboardText = ""
             lastAutoSentText = ""
             rawPreviewText = ""
             rawPreviewImageBase64 = base64
+            rawPreviewImageSource = localClipboard.setPreviewImageBase64(base64)
+            imagePreview.triedDataUrlFallback = false
+
+            observedLocalImageFingerprint = incomingFingerprint
+            recentNetworkImageFingerprint = incomingFingerprint
+            lastAutoSentImageFingerprint = incomingFingerprint
+            pendingPasteboardImageBase64 = base64
+            pendingPasteboardImageFingerprint = incomingFingerprint
+            deferredPasteboardImageTimer.restart()
         }
 
         function onImageSent(fingerprint) {
@@ -497,15 +534,28 @@ ApplicationWindow {
                 }
 
                 Image {
+                    id: imagePreview
+                    property bool triedDataUrlFallback: false
                     visible: rawPreviewImageBase64.length > 0
                     anchors.fill: parent
                     anchors.margins: 12
-                    source: visible ? "data:image/png;base64," + rawPreviewImageBase64 : ""
+                    source: visible
+                        ? (triedDataUrlFallback || rawPreviewImageSource.length === 0
+                            ? "data:image/png;base64," + rawPreviewImageBase64
+                            : rawPreviewImageSource)
+                        : ""
                     fillMode: Image.PreserveAspectFit
                     horizontalAlignment: Image.AlignHCenter
                     verticalAlignment: Image.AlignVCenter
                     cache: false
-                    asynchronous: true
+                    asynchronous: false
+                    onStatusChanged: {
+                        if (status === Image.Error
+                                && !triedDataUrlFallback
+                                && rawPreviewImageBase64.length > 0) {
+                            triedDataUrlFallback = true
+                        }
+                    }
                 }
             }
 

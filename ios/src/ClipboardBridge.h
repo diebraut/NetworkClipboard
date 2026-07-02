@@ -22,8 +22,12 @@ public:
     Q_INVOKABLE QString imageFingerprintFromBase64(const QString &base64) const;
     Q_INVOKABLE QString imageBase64() const;
     Q_INVOKABLE bool setImageBase64(const QString &base64);
+    Q_INVOKABLE QString setPreviewImageBase64(const QString &base64);
+    Q_INVOKABLE void clearPreviewImage();
     Q_INVOKABLE void markPasteSettingsOfferSeen();
     Q_INVOKABLE void openAppSettings() const;
+
+    QImage previewImage() const;
 
 signals:
     void textChanged();
@@ -37,4 +41,6 @@ private:
     mutable QImage m_cachedImage;
     mutable QString m_cachedImageFingerprint;
     mutable QString m_cachedImageBase64;
+    QImage m_previewImage;
+    int m_previewImageRevision = 0;
 };

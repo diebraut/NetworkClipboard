@@ -27,6 +27,7 @@ constexpr quint16 DiscoveryPort = 8788;
 constexpr quint16 ApiPort = 8787;
 constexpr auto DiscoveryRequest = "NETWORK_CLIPBOARD_DISCOVER_V1";
 constexpr qsizetype MaxImageBytes = 10 * 1024 * 1024;
+constexpr int LatestRequestTimeoutMs = 60000;
 
 QString replyErrorMessage(QNetworkReply *reply)
 {
@@ -267,44 +268,69 @@ void NetworkClipboardClient::getLatest()
 
 void NetworkClipboardClient::pollLatest()
 {
-    if (m_latestRequestInFlight || !m_serverActive)
+    pollLatest(false);
+}
+
+void NetworkClipboardClient::forcePollLatest()
+{
+    pollLatest(true);
+}
+
+void NetworkClipboardClient::pollLatest(bool force)
+{
+    if (m_latestRequestInFlight)
         return;
 
     const QString serverUrl = normalizedServerUrl();
-    if (serverUrl.isEmpty() || m_token.trimmed().isEmpty())
+    if (serverUrl.isEmpty()) {
+        setStatus(QStringLiteral("Server URL fehlt."));
         return;
+    }
+
+    if (!m_serverActive) {
+        setStatus(QStringLiteral("Kein aktiver Server."));
+        return;
+    }
+
+    if (m_token.trimmed().isEmpty()) {
+        setStatus(QStringLiteral("API token fehlt."));
+        return;
+    }
 
     m_latestRequestInFlight = true;
 
     QNetworkRequest latestRequest = request(QStringLiteral("/api/clipboard/latest"));
-    if (!m_latestEntryId.isEmpty())
+    if (!force && !m_latestEntryId.isEmpty())
         latestRequest.setRawHeader("If-None-Match", m_latestEntryId.toUtf8());
     QNetworkReply *reply = m_network.get(latestRequest);
-    QTimer::singleShot(10000, reply, [reply]() {
+    QTimer::singleShot(LatestRequestTimeoutMs, reply, [reply]() {
         if (reply->isRunning())
             reply->abort();
     });
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, force]() {
         m_latestRequestInFlight = false;
 
         if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 304) {
             reply->deleteLater();
             return;
         }
-        if (reply->error() == QNetworkReply::NoError) {
-            const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
-            handleClipboardEntry(object);
+        if (reply->error() != QNetworkReply::NoError) {
+            setStatus(replyErrorMessage(reply));
+            reply->deleteLater();
+            return;
         }
 
+        const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
+        handleClipboardEntry(object, force);
         reply->deleteLater();
     });
 }
 
-void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object)
+void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object, bool force)
 {
     const QString id = object.value(QStringLiteral("id")).toString();
-    if (!id.isEmpty() && id == m_latestEntryId)
+    if (!force && !id.isEmpty() && id == m_latestEntryId)
         return;
 
     const QString type = object.value(QStringLiteral("type")).toString(QStringLiteral("text"));
@@ -317,12 +343,12 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object)
         if (mimeType != QStringLiteral("image/png")
             || pngData.isEmpty()
             || pngData.size() > MaxImageBytes
-            || pngData.toBase64() != encoded
             || !pngData.startsWith(QByteArray(PngSignature, 8))) {
             setStatus(QStringLiteral("Server lieferte ein ungültiges Bild."));
             return;
         }
 
+        setStatus(QStringLiteral("Bild empfangen: %1 KB.").arg((pngData.size() + 1023) / 1024));
         if (!id.isEmpty())
             m_latestEntryId = id;
         emit latestImageReceived(content);

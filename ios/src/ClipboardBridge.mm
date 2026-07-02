@@ -5,9 +5,11 @@
 #include <QClipboard>
 #include <QCryptographicHash>
 #include <QDesktopServices>
-#include <QDebug>
+#include <QDir>
+#include <QFile>
 #include <QGuiApplication>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QUrl>
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -108,10 +110,7 @@ bool pasteboardMayStillProvideImage(UIPasteboard *pasteboard)
 bool canAccessPasteboard()
 {
     const UIApplicationState state = UIApplication.sharedApplication.applicationState;
-    const bool active = state == UIApplicationStateActive;
-    if (!active)
-        qInfo() << "NetworkClipboardIOS: pasteboard access skipped, applicationState=" << static_cast<int>(state);
-    return active;
+    return state == UIApplicationStateActive;
 }
 
 UIPasteboard *availablePasteboard()
@@ -285,12 +284,6 @@ QImage pasteboardImage()
         }
     }
 
-    QStringList typeNames;
-    for (NSString *type in types)
-        typeNames.append(QString::fromUtf8(type.UTF8String));
-    qInfo() << "NetworkClipboardIOS: no pasteboard image decoded"
-            << "hasImages=" << pasteboard.hasImages
-            << "types=" << typeNames;
     return {};
 }
 
@@ -324,8 +317,6 @@ qint64 ClipboardBridge::pasteboardChangeCount() const
 QString ClipboardBridge::text() const
 {
     const QString text = withUnixLineEndings(QGuiApplication::clipboard()->text());
-    qInfo() << "NetworkClipboardIOS: text() read length=" << text.length()
-            << "preview=" << text.left(180);
     return isPasteboardAuthorizationError(text) ? QString{} : text;
 }
 
@@ -336,23 +327,17 @@ void ClipboardBridge::setText(const QString &text)
 
 bool ClipboardBridge::hasImage() const
 {
-    if (!canAccessPasteboard()) {
-        qInfo() << "NetworkClipboardIOS: hasImage() -> false, pasteboard unavailable";
+    if (!canAccessPasteboard())
         return false;
-    }
     updateImageCache();
-    qInfo() << "NetworkClipboardIOS: hasImage() ->" << !m_cachedImage.isNull();
     return !m_cachedImage.isNull();
 }
 
 QString ClipboardBridge::imageFingerprint() const
 {
-    if (!canAccessPasteboard()) {
-        qInfo() << "NetworkClipboardIOS: imageFingerprint() empty, pasteboard unavailable";
+    if (!canAccessPasteboard())
         return {};
-    }
     updateImageCache();
-    qInfo() << "NetworkClipboardIOS: imageFingerprint() length=" << m_cachedImageFingerprint.length();
     return m_cachedImageFingerprint;
 }
 
@@ -366,12 +351,9 @@ QString ClipboardBridge::imageFingerprintFromBase64(const QString &base64) const
 
 QString ClipboardBridge::imageBase64() const
 {
-    if (!canAccessPasteboard()) {
-        qInfo() << "NetworkClipboardIOS: imageBase64() empty, pasteboard unavailable";
+    if (!canAccessPasteboard())
         return {};
-    }
     updateImageCache();
-    qInfo() << "NetworkClipboardIOS: imageBase64() length=" << m_cachedImageBase64.length();
     return m_cachedImageBase64;
 }
 
@@ -396,9 +378,52 @@ bool ClipboardBridge::setImageBase64(const QString &base64)
     m_cachedPasteboardChangeCount = pasteboard.changeCount;
     m_cachedImage = image;
     m_cachedImageFingerprint = QString::fromLatin1(imageFingerprintBytes(image).toHex());
-    m_cachedImageBase64 = QString::fromLatin1(pngData.toBase64());
+    m_cachedImageBase64 = base64;
     emit clipboardChanged();
     return true;
+}
+
+QString ClipboardBridge::setPreviewImageBase64(const QString &base64)
+{
+    const QByteArray pngData = QByteArray::fromBase64(base64.toLatin1());
+    const QImage image = QImage::fromData(pngData, "PNG");
+    if (image.isNull()) {
+        m_previewImage = {};
+        ++m_previewImageRevision;
+        return {};
+    }
+
+    m_previewImage = image;
+    ++m_previewImageRevision;
+
+    QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (cacheDir.isEmpty())
+        cacheDir = QDir::tempPath();
+    QDir().mkpath(cacheDir);
+
+    const QString path = QDir(cacheDir).filePath(
+        QStringLiteral("network-clipboard-preview-%1.png").arg(m_previewImageRevision));
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return {};
+    if (file.write(pngData) != pngData.size())
+        return {};
+
+    return QUrl::fromLocalFile(path).toString();
+}
+
+void ClipboardBridge::clearPreviewImage()
+{
+    if (m_previewImage.isNull())
+        return;
+
+    m_previewImage = {};
+    ++m_previewImageRevision;
+}
+
+QImage ClipboardBridge::previewImage() const
+{
+    return m_previewImage;
 }
 
 void ClipboardBridge::markPasteSettingsOfferSeen()
@@ -419,22 +444,12 @@ void ClipboardBridge::openAppSettings() const
 void ClipboardBridge::updateImageCache() const
 {
     UIPasteboard *pasteboard = availablePasteboard();
-    if (pasteboard == nil) {
-        qInfo() << "NetworkClipboardIOS: updateImageCache skipped, pasteboard unavailable";
+    if (pasteboard == nil)
         return;
-    }
 
     const qint64 changeCount = pasteboard.changeCount;
-    if (m_cachedPasteboardChangeCount == changeCount) {
-        qInfo() << "NetworkClipboardIOS: updateImageCache unchanged changeCount=" << changeCount
-                << "cachedImage=" << !m_cachedImage.isNull();
+    if (m_cachedPasteboardChangeCount == changeCount)
         return;
-    }
-
-    qInfo() << "NetworkClipboardIOS: updateImageCache reading changeCount=" << changeCount
-            << "previous=" << m_cachedPasteboardChangeCount
-            << "hasImages=" << pasteboard.hasImages
-            << "types=" << pasteboard.pasteboardTypes;
 
     m_cachedImage = pasteboardImage();
     m_cachedImageFingerprint.clear();
@@ -445,7 +460,6 @@ void ClipboardBridge::updateImageCache() const
         // representation while the user is switching back to the app. Do not
         // cache those negative reads; let the QML retry timer ask again.
         const bool mayStillProvideImage = pasteboardMayStillProvideImage(pasteboard);
-        qInfo() << "NetworkClipboardIOS: updateImageCache no image, mayStillProvideImage=" << mayStillProvideImage;
         if (!mayStillProvideImage)
             m_cachedPasteboardChangeCount = changeCount;
         return;
@@ -456,7 +470,4 @@ void ClipboardBridge::updateImageCache() const
     const QByteArray pngData = networkPngData(m_cachedImage);
     if (!pngData.isEmpty())
         m_cachedImageBase64 = QString::fromLatin1(pngData.toBase64());
-    qInfo() << "NetworkClipboardIOS: updateImageCache image decoded size=" << m_cachedImage.size()
-            << "fingerprintLength=" << m_cachedImageFingerprint.length()
-            << "base64Length=" << m_cachedImageBase64.length();
 }
