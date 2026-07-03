@@ -370,11 +370,10 @@ bool ClipboardBridge::setImageBase64(const QString &base64)
 
     NSData *data = [NSData dataWithBytes:pngData.constData()
                                   length:static_cast<NSUInteger>(pngData.size())];
-    UIImage *uiImage = [UIImage imageWithData:data];
-    if (uiImage == nil)
+    if (data == nil || data.length == 0)
         return false;
 
-    pasteboard.image = uiImage;
+    pasteboard.items = @[@{ UTTypePNG.identifier : data }];
     m_cachedPasteboardChangeCount = pasteboard.changeCount;
     m_cachedImage = image;
     m_cachedImageFingerprint = QString::fromLatin1(imageFingerprintBytes(image).toHex());

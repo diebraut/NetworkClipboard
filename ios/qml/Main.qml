@@ -60,10 +60,7 @@ ApplicationWindow {
                 observedLocalImageFingerprint = fingerprint
                 observedLocalClipboardText = ""
                 lastAutoSentText = ""
-                rawPreviewText = ""
-                rawPreviewImageBase64 = base64
-                rawPreviewImageSource = localClipboard.setPreviewImageBase64(base64)
-                imagePreview.triedDataUrlFallback = false
+                showPreviewImage(base64)
             }
 
             if (networkClipboard.serverActive
@@ -117,6 +114,16 @@ ApplicationWindow {
         clipboardSyncRetries = Qt.platform.os === "ios" ? 20 : 12
         clipboardSyncTimer.interval = Qt.platform.os === "ios" ? 700 : 350
         clipboardSyncTimer.restart()
+    }
+
+    function showPreviewImage(base64) {
+        rawPreviewText = ""
+        if (rawPreviewImageBase64 === base64 && rawPreviewImageBase64.length > 0)
+            return
+
+        rawPreviewImageBase64 = base64
+        rawPreviewImageSource = ""
+        imagePreview.triedFileFallback = false
     }
 
     function appInForeground() {
@@ -307,21 +314,13 @@ ApplicationWindow {
                 lastAutoSentImageFingerprint = incomingFingerprint
                 observedLocalClipboardText = ""
                 lastAutoSentText = ""
-                rawPreviewText = ""
-                if (rawPreviewImageBase64.length === 0) {
-                    rawPreviewImageBase64 = base64
-                    rawPreviewImageSource = localClipboard.setPreviewImageBase64(base64)
-                    imagePreview.triedDataUrlFallback = false
-                }
+                showPreviewImage(base64)
                 return
             }
 
             observedLocalClipboardText = ""
             lastAutoSentText = ""
-            rawPreviewText = ""
-            rawPreviewImageBase64 = base64
-            rawPreviewImageSource = localClipboard.setPreviewImageBase64(base64)
-            imagePreview.triedDataUrlFallback = false
+            showPreviewImage(base64)
 
             observedLocalImageFingerprint = incomingFingerprint
             recentNetworkImageFingerprint = incomingFingerprint
@@ -538,14 +537,14 @@ ApplicationWindow {
 
                 Image {
                     id: imagePreview
-                    property bool triedDataUrlFallback: false
+                    property bool triedFileFallback: false
                     visible: rawPreviewImageBase64.length > 0
                     anchors.fill: parent
                     anchors.margins: 12
                     source: visible
-                        ? (triedDataUrlFallback || rawPreviewImageSource.length === 0
-                            ? "data:image/png;base64," + rawPreviewImageBase64
-                            : rawPreviewImageSource)
+                        ? (rawPreviewImageSource.length > 0
+                            ? rawPreviewImageSource
+                            : "data:image/png;base64," + rawPreviewImageBase64)
                         : ""
                     fillMode: Image.PreserveAspectFit
                     horizontalAlignment: Image.AlignHCenter
@@ -554,9 +553,10 @@ ApplicationWindow {
                     asynchronous: false
                     onStatusChanged: {
                         if (status === Image.Error
-                                && !triedDataUrlFallback
+                                && !triedFileFallback
                                 && rawPreviewImageBase64.length > 0) {
-                            triedDataUrlFallback = true
+                            triedFileFallback = true
+                            rawPreviewImageSource = localClipboard.setPreviewImageBase64(rawPreviewImageBase64)
                         }
                     }
                 }
