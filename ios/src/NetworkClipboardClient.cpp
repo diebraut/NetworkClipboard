@@ -682,17 +682,11 @@ void NetworkClipboardClient::startInitialServerDiscovery()
     QTimer::singleShot(400, this, [this]() { sendDiscoveryDatagrams(); });
     QTimer::singleShot(900, this, [this]() { sendDiscoveryDatagrams(); });
 
-    if (!m_servers.isEmpty())
+    if (!m_servers.isEmpty()) {
         checkKnownServers();
-
-    m_discoveryInProgress = true;
-    m_networkScanQueue.clear();
-    m_networkScanPending = 0;
-    m_networkScanCompleted = 0;
-    m_networkScanTotal = 0;
-    emit discoveryProgressChanged();
-    startHttpDiscovery();
-    QTimer::singleShot(1200, this, &NetworkClipboardClient::startNetworkScan);
+    } else {
+        setStatus(QStringLiteral("Kein gespeicherter Server. Warte auf UDP-Antwort."));
+    }
 }
 
 void NetworkClipboardClient::probeDiscoveryUrl(const QUrl &url, bool networkScan)
