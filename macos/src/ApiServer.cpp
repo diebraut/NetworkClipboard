@@ -89,8 +89,26 @@ QByteArray reasonPhrase(int statusCode)
     default: return "Internal Server Error";
     }
 }
-
+QJsonObject clipboardMetadataJson(const ClipboardEntry &entry)
+{
+    QJsonObject object = entry.toJson();
+    if (entry.type == QStringLiteral("image")) {
+        const QByteArray imageData = QByteArray::fromBase64(entry.content.toLatin1());
+        object.remove(QStringLiteral("content"));
+        object.insert(QStringLiteral("contentUrl"), QStringLiteral("/api/clipboard/latest/content"));
+        object.insert(QStringLiteral("contentLength"), imageData.size());
+    }
+    return object;
 }
+
+QByteArray clipboardImageData(const ClipboardEntry &entry)
+{
+    if (entry.type != QStringLiteral("image") || entry.mimeType != QStringLiteral("image/png"))
+        return {};
+    return QByteArray::fromBase64(entry.content.toLatin1());
+}
+}
+
 
 ApiServer::ApiServer(ClipboardStore *store, QObject *parent)
     : QObject(parent), m_store(store)
@@ -265,6 +283,38 @@ void ApiServer::processRequest(QTcpSocket *socket, const HttpRequest &request)
         return;
     }
 
+    if (request.method == QStringLiteral("GET") && request.path == QStringLiteral("/api/clipboard/latest/meta")) {
+        const auto latest = m_store->latest();
+        if (!latest) {
+            sendError(socket, 404, QStringLiteral("Network clipboard is empty."));
+            return;
+        }
+        QString knownEntryId = request.headers.value(QStringLiteral("if-none-match")).trimmed();
+        if (knownEntryId.startsWith(QLatin1Char('"')) && knownEntryId.endsWith(QLatin1Char('"')))
+            knownEntryId = knownEntryId.mid(1, knownEntryId.size() - 2);
+        if (!latest->id.isEmpty() && knownEntryId == latest->id) {
+            sendBytes(socket, 304, "application/json; charset=utf-8", {});
+            return;
+        }
+        sendJson(socket, 200, clipboardMetadataJson(*latest));
+        return;
+    }
+
+    if (request.method == QStringLiteral("GET") && request.path == QStringLiteral("/api/clipboard/latest/content")) {
+        const auto latest = m_store->latest();
+        if (!latest) {
+            sendError(socket, 404, QStringLiteral("Network clipboard is empty."));
+            return;
+        }
+        const QByteArray imageData = clipboardImageData(*latest);
+        if (imageData.isEmpty()) {
+            sendError(socket, 404, QStringLiteral("Latest clipboard entry has no image content."));
+            return;
+        }
+        sendBytes(socket, 200, "image/png", imageData);
+        return;
+    }
+
     if (request.method == QStringLiteral("GET") && request.path == QStringLiteral("/api/clipboard/latest")) {
         const auto latest = m_store->latest();
         if (!latest) {
@@ -276,6 +326,11 @@ void ApiServer::processRequest(QTcpSocket *socket, const HttpRequest &request)
             knownEntryId = knownEntryId.mid(1, knownEntryId.size() - 2);
         if (!latest->id.isEmpty() && knownEntryId == latest->id) {
             sendBytes(socket, 304, "application/json; charset=utf-8", {});
+            return;
+        }
+        const QString accept = request.headers.value(QStringLiteral("accept"));
+        if (accept.contains(QStringLiteral("application/vnd.networkclipboard.meta+json"))) {
+            sendJson(socket, 200, clipboardMetadataJson(*latest));
             return;
         }
         sendJson(socket, 200, latest->toJson());

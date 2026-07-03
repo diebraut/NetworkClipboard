@@ -250,7 +250,9 @@ void NetworkClipboardClient::getLatest()
     withAvailableServer(QStringLiteral("Prüfe Server vor dem Empfangen..."), [this](const QString &) {
         setStatus(QStringLiteral("Empfange von %1").arg(m_serverName));
 
-        QNetworkReply *reply = m_network.get(request(QStringLiteral("/api/clipboard/latest")));
+        QNetworkRequest latestRequest = request(QStringLiteral("/api/clipboard/latest"));
+        latestRequest.setRawHeader("Accept", "application/vnd.networkclipboard.meta+json, application/json");
+        QNetworkReply *reply = m_network.get(latestRequest);
         connect(reply, &QNetworkReply::finished, this, [this, reply]() {
             if (reply->error() != QNetworkReply::NoError) {
                 setStatus(replyErrorMessage(reply));
@@ -300,6 +302,7 @@ void NetworkClipboardClient::pollLatest(bool force)
     m_latestRequestInFlight = true;
 
     QNetworkRequest latestRequest = request(QStringLiteral("/api/clipboard/latest"));
+    latestRequest.setRawHeader("Accept", "application/vnd.networkclipboard.meta+json, application/json");
     if (!force && !m_latestEntryId.isEmpty())
         latestRequest.setRawHeader("If-None-Match", m_latestEntryId.toUtf8());
     QNetworkReply *reply = m_network.get(latestRequest);
@@ -337,14 +340,63 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object, boo
     if (type == QStringLiteral("image")) {
         const QString mimeType = object.value(QStringLiteral("mimeType")).toString();
         const QString content = object.value(QStringLiteral("content")).toString();
+        const QString contentUrl = object.value(QStringLiteral("contentUrl")).toString();
+        constexpr char PngSignature[] = "\x89PNG\r\n\x1a\n";
+
+        if (mimeType != QStringLiteral("image/png")) {
+            setStatus(QStringLiteral("Server lieferte ein ungueltiges Bild."));
+            return;
+        }
+
+        if (content.isEmpty() && !contentUrl.isEmpty()) {
+            QString imageUrl = contentUrl;
+            if (!imageUrl.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive)
+                && !imageUrl.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive)) {
+                if (!imageUrl.startsWith(QLatin1Char('/')))
+                    imageUrl.prepend(QLatin1Char('/'));
+                imageUrl.prepend(normalizedServerUrl());
+            }
+
+            QNetworkRequest imageRequest{QUrl(imageUrl)};
+            imageRequest.setRawHeader("Authorization", QByteArray("Bearer ") + m_token.toUtf8());
+            imageRequest.setRawHeader("Accept", "image/png");
+            QNetworkReply *reply = m_network.get(imageRequest);
+            QTimer::singleShot(LatestRequestTimeoutMs, reply, [reply]() {
+                if (reply->isRunning())
+                    reply->abort();
+            });
+            connect(reply, &QNetworkReply::finished, this, [this, reply, id]() {
+                if (reply->error() != QNetworkReply::NoError) {
+                    setStatus(replyErrorMessage(reply));
+                    reply->deleteLater();
+                    return;
+                }
+
+                const QByteArray pngData = reply->readAll();
+                constexpr char PngSignature[] = "\x89PNG\r\n\x1a\n";
+                if (pngData.isEmpty()
+                    || pngData.size() > MaxImageBytes
+                    || !pngData.startsWith(QByteArray(PngSignature, 8))) {
+                    setStatus(QStringLiteral("Server lieferte ein ungueltiges Bild."));
+                    reply->deleteLater();
+                    return;
+                }
+
+                if (!id.isEmpty())
+                    m_latestEntryId = id;
+                setStatus(QStringLiteral("Bild empfangen: %1 KB.").arg((pngData.size() + 1023) / 1024));
+                emit latestImageReceived(QString::fromLatin1(pngData.toBase64()));
+                reply->deleteLater();
+            });
+            return;
+        }
+
         const QByteArray encoded = content.toLatin1();
         const QByteArray pngData = QByteArray::fromBase64(encoded);
-        constexpr char PngSignature[] = "\x89PNG\r\n\x1a\n";
-        if (mimeType != QStringLiteral("image/png")
-            || pngData.isEmpty()
+        if (pngData.isEmpty()
             || pngData.size() > MaxImageBytes
             || !pngData.startsWith(QByteArray(PngSignature, 8))) {
-            setStatus(QStringLiteral("Server lieferte ein ungültiges Bild."));
+            setStatus(QStringLiteral("Server lieferte ein ungueltiges Bild."));
             return;
         }
 
