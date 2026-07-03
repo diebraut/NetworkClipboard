@@ -1,4 +1,4 @@
-﻿#include "NetworkClipboardClient.h"
+#include "NetworkClipboardClient.h"
 
 #include <QAbstractSocket>
 #include <QByteArray>
@@ -299,7 +299,7 @@ void NetworkClipboardClient::pollLatest()
     if (!m_latestEntryId.isEmpty())
         latestRequest.setRawHeader("If-None-Match", m_latestEntryId.toUtf8());
     QNetworkReply *reply = m_network.get(latestRequest);
-    QTimer::singleShot(10000, reply, [reply]() {
+    QTimer::singleShot(90000, reply, [reply]() {
         if (reply->isRunning())
             reply->abort();
     });
@@ -360,6 +360,8 @@ void NetworkClipboardClient::discoverServer()
         return;
     }
     m_discoveryInProgress = true;
+    m_networkScanQueue.clear();
+    m_networkScanPending = 0;
     m_networkScanCompleted = 0;
     m_networkScanTotal = 0;
     emit discoveryProgressChanged();
@@ -371,15 +373,7 @@ void NetworkClipboardClient::discoverServer()
     QTimer::singleShot(900, this, [this]() { sendDiscoveryDatagrams(); });
 
     startHttpDiscovery();
-    QTimer::singleShot(2200, this, [this]() {
-        if (!m_discoveryInProgress)
-            return;
-
-        m_discoveryInProgress = false;
-        emit discoveryProgressChanged();
-        setStatus(QStringLiteral("Serversuche abgeschlossen: %1 Server bekannt.").arg(m_servers.size()));
-        QTimer::singleShot(0, this, &NetworkClipboardClient::checkKnownServers);
-    });
+    QTimer::singleShot(1200, this, &NetworkClipboardClient::startNetworkScan);
 }
 
 void NetworkClipboardClient::connectToServerUrl(const QString &serverUrl)
@@ -659,14 +653,24 @@ void NetworkClipboardClient::handleDiscoveryResponse()
 
 void NetworkClipboardClient::startInitialServerDiscovery()
 {
-    if (!m_servers.isEmpty()) {
-        checkKnownServers();
-    } else {
+    if (m_servers.isEmpty())
         setStatus(QStringLiteral("Suche Clipboard-Server..."));
-        sendDiscoveryDatagrams();
-        QTimer::singleShot(400, this, [this]() { sendDiscoveryDatagrams(); });
-        QTimer::singleShot(900, this, [this]() { sendDiscoveryDatagrams(); });
-    }
+
+    sendDiscoveryDatagrams();
+    QTimer::singleShot(400, this, [this]() { sendDiscoveryDatagrams(); });
+    QTimer::singleShot(900, this, [this]() { sendDiscoveryDatagrams(); });
+
+    if (!m_servers.isEmpty())
+        checkKnownServers();
+
+    m_discoveryInProgress = true;
+    m_networkScanQueue.clear();
+    m_networkScanPending = 0;
+    m_networkScanCompleted = 0;
+    m_networkScanTotal = 0;
+    emit discoveryProgressChanged();
+    startHttpDiscovery();
+    QTimer::singleShot(1200, this, &NetworkClipboardClient::startNetworkScan);
 }
 
 void NetworkClipboardClient::probeDiscoveryUrl(const QUrl &url, bool networkScan)
@@ -1095,14 +1099,21 @@ void NetworkClipboardClient::checkSelectedServer()
             const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
             const bool validServer = object.value(QStringLiteral("service")).toString() == QStringLiteral("NetworkClipboard");
             if (validServer) {
-                m_missedServerChecks = 0;
-                addDiscoveredServer(object, serverUrl);
                 updateServerName(object.value(QStringLiteral("serverName")).toString(), serverUrl);
                 const QString discoveredToken = object.value(QStringLiteral("token")).toString();
                 if (!discoveredToken.isEmpty())
                     setToken(discoveredToken);
-                setServerActive(!object.contains(QStringLiteral("agentActive")) || object.value(QStringLiteral("agentActive")).toBool(false));
-                saveSelectedServer();
+                const bool available = !object.contains(QStringLiteral("agentActive"))
+                    || object.value(QStringLiteral("agentActive")).toBool(false);
+                if (available) {
+                    m_missedServerChecks = 0;
+                    addDiscoveredServer(object, serverUrl);
+                    setServerActive(true);
+                    saveSelectedServer();
+                } else if (++m_missedServerChecks >= 3) {
+                    setServerActive(false);
+                    setStatus(QStringLiteral("Windows Tray-Agent ist nicht aktiv."));
+                }
             } else {
                 ++m_missedServerChecks;
                 if (m_missedServerChecks >= 3) {
@@ -1219,11 +1230,13 @@ void NetworkClipboardClient::checkKnownServers()
 
     m_knownServerCheckInFlight = true;
     m_knownServerCheckPending = m_servers.size();
+    m_knownServerCheckFoundActive = false;
+    m_knownServerListChanged = false;
 
     for (const QVariant &serverValue : std::as_const(m_servers)) {
         const QString serverUrl = serverValue.toMap().value(QStringLiteral("url")).toString();
         QNetworkReply *reply = m_network.get(discoveryRequest(serverUrl));
-        QTimer::singleShot(1400, reply, [reply]() {
+        QTimer::singleShot(900, reply, [reply]() {
             if (reply->isRunning())
                 reply->abort();
         });
@@ -1243,8 +1256,12 @@ void NetworkClipboardClient::checkKnownServers()
                 if (server.value(QStringLiteral("url")).toString() != serverUrl)
                     continue;
 
-                server.insert(QStringLiteral("active"), available);
+                const QVariantMap originalServer = server;
+                const bool wasActive = server.value(QStringLiteral("active")).toBool();
+                const bool keepVisibleDuringGrace = !available && wasActive && m_knownServerMisses < 2;
+                server.insert(QStringLiteral("active"), available || keepVisibleDuringGrace);
                 if (available) {
+                    m_knownServerCheckFoundActive = true;
                     const QString name = object.value(QStringLiteral("serverName")).toString().trimmed();
                     const QString token = object.value(QStringLiteral("token")).toString();
                     if (!name.isEmpty())
@@ -1253,7 +1270,17 @@ void NetworkClipboardClient::checkKnownServers()
                         server.insert(QStringLiteral("token"), token);
                     server.insert(QStringLiteral("main"), object.value(QStringLiteral("isMaster")).toBool(false));
                 }
-                m_servers[i] = server;
+                if (server != originalServer) {
+                    m_servers[i] = server;
+                    m_knownServerListChanged = true;
+                }
+
+                const bool shouldActivateNow = available
+                    && (!m_manualServerSelection || i == m_selectedServerIndex)
+                    && (server.value(QStringLiteral("main")).toBool()
+                        || !m_serverActive);
+                if (shouldActivateNow)
+                    activateServer(i);
                 break;
             }
 
@@ -1268,8 +1295,11 @@ void NetworkClipboardClient::checkKnownServers()
 void NetworkClipboardClient::finishKnownServerCheck()
 {
     m_knownServerCheckInFlight = false;
-    emit serversChanged();
-    saveKnownServers();
+    if (m_knownServerCheckFoundActive) {
+        m_knownServerMisses = 0;
+    } else {
+        ++m_knownServerMisses;
+    }
 
     int mainServerIndex = -1;
     int firstActiveIndex = -1;
@@ -1286,6 +1316,32 @@ void NetworkClipboardClient::finishKnownServerCheck()
     }
 
     const int targetIndex = mainServerIndex >= 0 ? mainServerIndex : firstActiveIndex;
+    if (targetIndex < 0 && m_knownServerMisses < 3) {
+        sendDiscoveryDatagrams();
+        setStatus(QStringLiteral("Prüfe bekannte Server..."));
+        if (m_knownServerListChanged) {
+            emit serversChanged();
+            saveKnownServers();
+        }
+        return;
+    }
+
+    if (targetIndex < 0) {
+        for (int i = 0; i < m_servers.size(); ++i) {
+            QVariantMap server = m_servers.at(i).toMap();
+            if (server.value(QStringLiteral("active")).toBool()) {
+                server.insert(QStringLiteral("active"), false);
+                m_servers[i] = server;
+                m_knownServerListChanged = true;
+            }
+        }
+    }
+
+    if (m_knownServerListChanged) {
+        emit serversChanged();
+        saveKnownServers();
+    }
+
     if (m_manualServerSelection
         && m_selectedServerIndex >= 0
         && m_selectedServerIndex < m_servers.size()

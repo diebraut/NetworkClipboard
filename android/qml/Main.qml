@@ -1,4 +1,4 @@
-﻿import QtQuick
+import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
@@ -268,10 +268,7 @@ ApplicationWindow {
                 return
             }
 
-            if (!localClipboard.setImageBase64(base64))
-                return
-
-            const fingerprint = localClipboard.imageFingerprint()
+            const fingerprint = incomingFingerprint
             observedLocalImageFingerprint = fingerprint
             recentLocalImageFingerprint = fingerprint
             lastAutoSentImageFingerprint = fingerprint
@@ -279,6 +276,10 @@ ApplicationWindow {
             observedLocalClipboardText = ""
             rawPreviewText = ""
             rawPreviewImageBase64 = base64
+
+            Qt.callLater(function() {
+                localClipboard.setImageBase64(base64)
+            })
         }
 
         function onTextSent(text) {

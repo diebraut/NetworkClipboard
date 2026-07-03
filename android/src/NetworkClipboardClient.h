@@ -131,6 +131,9 @@ private:
     int m_networkScanCompleted = 0;
     int m_networkScanTotal = 0;
     int m_knownServerCheckPending = 0;
+    int m_knownServerMisses = 0;
+    bool m_knownServerCheckFoundActive = false;
+    bool m_knownServerListChanged = false;
     QString m_serverUrl;
     QString m_serverName;
     QString m_token;

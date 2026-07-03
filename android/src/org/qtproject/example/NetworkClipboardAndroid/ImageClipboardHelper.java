@@ -13,7 +13,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
-import java.security.MessageDigest;
 
 public final class ImageClipboardHelper
 {
@@ -31,25 +30,12 @@ public final class ImageClipboardHelper
 
     public static String imageKey(Context context)
     {
-        byte[] data = clipboardImageBytes(context);
-        if (data == null || data.length == 0)
+        Uri uri = clipboardImageUri(context);
+        if (uri == null)
             return "";
 
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(data);
-            StringBuilder builder = new StringBuilder();
-            builder.append(clipboardMarker(context)).append(':');
-            builder.append(data.length).append(':');
-            for (byte value : hash)
-                builder.append(String.format("%02x", value & 0xff));
-            String key = builder.toString();
-            Log.i(TAG, "imageKey bytes=" + data.length + " key=" + shortText(key));
-            return key;
-        } catch (Exception ignored) {
-            Log.w(TAG, "imageKey fallback bytes=" + data.length);
-            return String.valueOf(data.length);
-        }
+        String marker = clipboardMarker(context);
+        return marker == null || marker.isEmpty() ? uri.toString() : marker;
     }
 
     public static String imageBase64(Context context)
@@ -58,9 +44,7 @@ public final class ImageClipboardHelper
         if (data == null || data.length == 0)
             return "";
 
-        String encoded = Base64.encodeToString(data, Base64.NO_WRAP);
-        Log.i(TAG, "imageBase64 bytes=" + data.length + " base64=" + encoded.length());
-        return encoded;
+        return Base64.encodeToString(data, Base64.NO_WRAP);
     }
 
     public static boolean isNetworkClipboardImage(Context context)
@@ -70,11 +54,9 @@ public final class ImageClipboardHelper
             return false;
 
         String authority = uri.getAuthority();
-        boolean networkImage = authority != null
+        return authority != null
             && authority.startsWith("org.qtproject.example.NetworkClipboardAndroid")
             && authority.endsWith(".imageprovider");
-        Log.i(TAG, "isNetworkClipboardImage uri=" + uri + " result=" + networkImage);
-        return networkImage;
     }
 
     private static byte[] clipboardImageBytes(Context context)
@@ -85,23 +67,18 @@ public final class ImageClipboardHelper
 
         try (InputStream input = context.getContentResolver().openInputStream(uri);
              ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            if (input == null) {
-                Log.w(TAG, "clipboardImageBytes input is null uri=" + uri);
+            if (input == null)
                 return null;
-            }
 
             byte[] buffer = new byte[32 * 1024];
             int total = 0;
             int read;
             while ((read = input.read(buffer)) >= 0) {
                 total += read;
-                if (total > MAX_IMAGE_BYTES) {
-                    Log.w(TAG, "clipboardImageBytes too large bytes=" + total);
+                if (total > MAX_IMAGE_BYTES)
                     return null;
-                }
                 output.write(buffer, 0, read);
             }
-            Log.i(TAG, "clipboardImageBytes uri=" + uri + " bytes=" + total);
             return output.toByteArray();
         } catch (Exception exception) {
             Log.w(TAG, "clipboardImageBytes failed uri=" + uri + " error=" + exception);
@@ -113,10 +90,8 @@ public final class ImageClipboardHelper
     {
         try {
             byte[] pngData = Base64.decode(base64, Base64.DEFAULT);
-            if (pngData.length == 0 || pngData.length > MAX_IMAGE_BYTES) {
-                Log.w(TAG, "setImageBase64 invalid bytes=" + pngData.length);
+            if (pngData.length == 0 || pngData.length > MAX_IMAGE_BYTES)
                 return false;
-            }
 
             File directory = new File(context.getCacheDir(), "network_clipboard");
             if (!directory.exists() && !directory.mkdirs())
@@ -136,14 +111,11 @@ public final class ImageClipboardHelper
             Uri uri = NetworkClipboardImageProvider.uriForFile(context, imageFile);
             ClipboardManager clipboard =
                 (ClipboardManager)context.getSystemService(Context.CLIPBOARD_SERVICE);
-            if (clipboard == null) {
-                Log.w(TAG, "setImageBase64 clipboard is null");
+            if (clipboard == null)
                 return false;
-            }
 
             clipboard.setPrimaryClip(
                 ClipData.newUri(context.getContentResolver(), "Network Clipboard Image", uri));
-            Log.i(TAG, "setImageBase64 uri=" + uri + " bytes=" + pngData.length);
             return true;
         } catch (Exception exception) {
             Log.w(TAG, "setImageBase64 failed error=" + exception);
@@ -156,29 +128,20 @@ public final class ImageClipboardHelper
         try {
             ClipboardManager clipboard =
                 (ClipboardManager)context.getSystemService(Context.CLIPBOARD_SERVICE);
-            if (clipboard == null || !clipboard.hasPrimaryClip()) {
-                Log.i(TAG, "clipboardImageUri no primary clip");
+            if (clipboard == null || !clipboard.hasPrimaryClip())
                 return null;
-            }
 
             ClipData clip = clipboard.getPrimaryClip();
-            if (clip == null || clip.getItemCount() == 0) {
-                Log.i(TAG, "clipboardImageUri empty clip");
+            if (clip == null || clip.getItemCount() == 0)
                 return null;
-            }
 
             Uri uri = clip.getItemAt(0).getUri();
-            if (uri == null) {
-                Log.i(TAG, "clipboardImageUri item has no uri");
+            if (uri == null)
                 return null;
-            }
 
             String mimeType = context.getContentResolver().getType(uri);
-            if (mimeType == null || !mimeType.startsWith("image/")) {
-                Log.i(TAG, "clipboardImageUri ignored uri=" + uri + " mime=" + mimeType);
+            if (mimeType == null || !mimeType.startsWith("image/"))
                 return null;
-            }
-            Log.i(TAG, "clipboardImageUri uri=" + uri + " mime=" + mimeType);
             return uri;
         } catch (Exception exception) {
             Log.w(TAG, "clipboardImageUri failed error=" + exception);
@@ -205,12 +168,5 @@ public final class ImageClipboardHelper
         } catch (Exception ignored) {
             return "";
         }
-    }
-
-    private static String shortText(String text)
-    {
-        if (text == null)
-            return "";
-        return text.length() <= 80 ? text : text.substring(0, 80);
     }
 }
