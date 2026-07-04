@@ -64,6 +64,8 @@ ApplicationWindow {
         const text = localClipboard.text()
         if (text.trim().length === 0) {
             if (rawPreviewImageBase64.length > 0) {
+                if (Date.now() < localPublishGuardUntil || recentLocalImageFingerprint.length > 0)
+                    return
                 rawPreviewText = ""
                 rawPreviewImageBase64 = ""
                 observedLocalImageFingerprint = ""
@@ -264,7 +266,8 @@ ApplicationWindow {
                 lastAutoSentText = ""
                 observedLocalClipboardText = ""
                 rawPreviewText = ""
-                rawPreviewImageBase64 = base64
+                if (rawPreviewImageBase64.length === 0)
+                    rawPreviewImageBase64 = base64
                 return
             }
 
@@ -277,6 +280,7 @@ ApplicationWindow {
             rawPreviewText = ""
             rawPreviewImageBase64 = base64
 
+            localPublishGuardUntil = Date.now() + 2500
             Qt.callLater(function() {
                 localClipboard.setImageBase64(base64)
             })
@@ -515,7 +519,7 @@ ApplicationWindow {
                     horizontalAlignment: Image.AlignHCenter
                     verticalAlignment: Image.AlignVCenter
                     cache: false
-                    asynchronous: true
+                    asynchronous: false
                 }
             }
 

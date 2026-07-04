@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QNetworkAccessManager>
 #include <QJsonObject>
@@ -131,4 +131,5 @@ private:
     QString m_token;
     QString m_status = QStringLiteral("Ready");
     QString m_latestEntryId;
+    QString m_pendingImageEntryId;
 };

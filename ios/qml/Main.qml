@@ -1,4 +1,4 @@
-﻿import QtQuick
+import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
@@ -308,9 +308,11 @@ ApplicationWindow {
                 observedLocalClipboardText = ""
                 lastAutoSentText = ""
                 rawPreviewText = ""
-                rawPreviewImageBase64 = base64
-                rawPreviewImageSource = localClipboard.setPreviewImageBase64(base64)
-                imagePreview.triedDataUrlFallback = false
+                if (rawPreviewImageBase64.length === 0) {
+                    rawPreviewImageBase64 = base64
+                    rawPreviewImageSource = localClipboard.setPreviewImageBase64(base64)
+                    imagePreview.triedDataUrlFallback = false
+                }
                 return
             }
 
@@ -326,6 +328,7 @@ ApplicationWindow {
             lastAutoSentImageFingerprint = incomingFingerprint
             pendingPasteboardImageBase64 = base64
             pendingPasteboardImageFingerprint = incomingFingerprint
+            localPublishGuardUntil = Date.now() + 2500
             deferredPasteboardImageTimer.restart()
         }
 

@@ -349,6 +349,9 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object, boo
         }
 
         if (content.isEmpty() && !contentUrl.isEmpty()) {
+            if (!id.isEmpty() && id == m_pendingImageEntryId)
+                return;
+            m_pendingImageEntryId = id;
             QString imageUrl = contentUrl;
             if (!imageUrl.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive)
                 && !imageUrl.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive)) {
@@ -366,6 +369,8 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object, boo
                     reply->abort();
             });
             connect(reply, &QNetworkReply::finished, this, [this, reply, id]() {
+                if (m_pendingImageEntryId == id)
+                    m_pendingImageEntryId.clear();
                 if (reply->error() != QNetworkReply::NoError) {
                     setStatus(replyErrorMessage(reply));
                     reply->deleteLater();
@@ -401,8 +406,11 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object, boo
         }
 
         setStatus(QStringLiteral("Bild empfangen: %1 KB.").arg((pngData.size() + 1023) / 1024));
-        if (!id.isEmpty())
+        if (!id.isEmpty()) {
             m_latestEntryId = id;
+            if (m_pendingImageEntryId == id)
+                m_pendingImageEntryId.clear();
+        }
         emit latestImageReceived(content);
         return;
     }
