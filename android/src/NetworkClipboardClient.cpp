@@ -1311,9 +1311,7 @@ void NetworkClipboardClient::checkKnownServers()
                     continue;
 
                 const QVariantMap originalServer = server;
-                const bool wasActive = server.value(QStringLiteral("active")).toBool();
-                const bool keepVisibleDuringGrace = !available && wasActive && m_knownServerMisses < 2;
-                server.insert(QStringLiteral("active"), available || keepVisibleDuringGrace);
+                server.insert(QStringLiteral("active"), available);
                 if (available) {
                     m_knownServerCheckFoundActive = true;
                     const QString name = object.value(QStringLiteral("serverName")).toString().trimmed();
@@ -1371,6 +1369,7 @@ void NetworkClipboardClient::finishKnownServerCheck()
 
     const int targetIndex = mainServerIndex >= 0 ? mainServerIndex : firstActiveIndex;
     if (targetIndex < 0 && m_knownServerMisses < 3) {
+        setServerActive(false);
         sendDiscoveryDatagrams();
         setStatus(QStringLiteral("Prüfe bekannte Server..."));
         if (m_knownServerListChanged) {

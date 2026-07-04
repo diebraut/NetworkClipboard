@@ -141,7 +141,7 @@ ApplicationWindow {
     }
 
     function serverDisplayText(name, active) {
-        const label = active && name.length > 0 ? name : "Kein Server aktiv"
+        const label = name.length > 0 ? name : "Kein Server aktiv"
         return "<span style=\"color:" + (active ? "#16a34a" : "#6b7280")
             + "; font-weight:600; text-decoration:" + (active ? "none" : "line-through")
             + ";\">" + label + "</span>"
