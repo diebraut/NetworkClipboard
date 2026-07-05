@@ -190,7 +190,7 @@ void NetworkClipboardClient::sendText(const QString &text, const QString &device
         {QStringLiteral("timestamp"), QDateTime::currentSecsSinceEpoch()}
     };
 
-    withAvailableServer(QStringLiteral("Prüfe Server vor dem Senden..."),
+    withAvailableServer(QStringLiteral("Pruefe Server vor dem Senden..."),
                         [this, body, content](const QString &) {
                             setStatus(QStringLiteral("Sende an %1").arg(m_serverName));
 
@@ -225,7 +225,7 @@ void NetworkClipboardClient::sendImage(const QString &base64Png,
         || pngData.size() > MaxImageBytes
         || pngData.toBase64() != encoded
         || !pngData.startsWith(QByteArray(PngSignature, 8))) {
-        setStatus(QStringLiteral("Bild ist ungültig oder größer als 10 MB."));
+        setStatus(QStringLiteral("Bild ist ungueltig oder groesser als 10 MB."));
         emit imageSendFailed(fingerprint);
         return;
     }
@@ -239,7 +239,7 @@ void NetworkClipboardClient::sendImage(const QString &base64Png,
         {QStringLiteral("timestamp"), QDateTime::currentSecsSinceEpoch()}
     };
 
-    withAvailableServer(QStringLiteral("Prüfe Server vor dem Senden..."),
+    withAvailableServer(QStringLiteral("Pruefe Server vor dem Senden..."),
                         [this, body, fingerprint](const QString &) {
                             setStatus(QStringLiteral("Sende Bild an %1").arg(m_serverName));
                             QNetworkReply *reply = m_network.post(
@@ -265,7 +265,7 @@ void NetworkClipboardClient::sendImage(const QString &base64Png,
 
 void NetworkClipboardClient::getLatest()
 {
-    withAvailableServer(QStringLiteral("Prüfe Server vor dem Empfangen..."), [this](const QString &) {
+    withAvailableServer(QStringLiteral("Pruefe Server vor dem Empfangen..."), [this](const QString &) {
         setStatus(QStringLiteral("Empfange von %1").arg(m_serverName));
 
         QNetworkRequest latestRequest = request(QStringLiteral("/api/clipboard/latest"));
@@ -326,10 +326,17 @@ void NetworkClipboardClient::pollLatest()
 void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object)
 {
     const QString id = object.value(QStringLiteral("id")).toString();
-    if (!id.isEmpty() && id == m_latestEntryId)
-        return;
-
     const QString type = object.value(QStringLiteral("type")).toString(QStringLiteral("text"));
+    qInfo() << "NetworkClipboardAndroid: latest entry"
+            << "id=" << id
+            << "previous=" << m_latestEntryId
+            << "type=" << type
+            << "contentLen=" << object.value(QStringLiteral("content")).toString().size()
+            << "contentUrl=" << object.value(QStringLiteral("contentUrl")).toString();
+    if (!id.isEmpty() && id == m_latestEntryId) {
+        qInfo() << "NetworkClipboardAndroid: latest entry ignored duplicate" << id;
+        return;
+    }
     if (type == QStringLiteral("image")) {
         const QString mimeType = object.value(QStringLiteral("mimeType")).toString();
         const QString content = object.value(QStringLiteral("content")).toString();
@@ -353,6 +360,7 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object)
                 imageUrl.prepend(normalizedServerUrl());
             }
 
+            qInfo() << "NetworkClipboardAndroid: downloading image" << "id=" << id << "url=" << imageUrl;
             QNetworkRequest imageRequest{QUrl(imageUrl)};
             imageRequest.setRawHeader("Authorization", QByteArray("Bearer ") + m_token.toUtf8());
             imageRequest.setRawHeader("Accept", "image/png");
@@ -371,6 +379,7 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object)
                 }
 
                 const QByteArray pngData = reply->readAll();
+                qInfo() << "NetworkClipboardAndroid: image download finished" << "id=" << id << "bytes=" << pngData.size();
                 constexpr char PngSignature[] = "\x89PNG\r\n\x1a\n";
                 if (pngData.isEmpty()
                     || pngData.size() > MaxImageBytes
@@ -404,6 +413,7 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object)
             if (m_pendingImageEntryId == id)
                 m_pendingImageEntryId.clear();
         }
+        qInfo() << "NetworkClipboardAndroid: emitting inline image" << "id=" << id << "base64Len=" << content.size();
         emit latestImageReceived(content);
         return;
     }
@@ -416,7 +426,7 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object)
 void NetworkClipboardClient::discoverServer()
 {
     if (m_discoveryInProgress) {
-        setStatus(QStringLiteral("Serversuche läuft bereits."));
+        setStatus(QStringLiteral("Serversuche laeuft bereits."));
         return;
     }
     m_discoveryInProgress = true;
@@ -455,7 +465,7 @@ void NetworkClipboardClient::connectToServerUrl(const QString &serverUrl)
     QUrl url(value);
     if (!url.isValid() || url.scheme().isEmpty() || url.host().isEmpty()
         || (url.scheme() != QStringLiteral("http") && url.scheme() != QStringLiteral("https"))) {
-        setStatus(QStringLiteral("Ungültige Server URL."));
+        setStatus(QStringLiteral("Ungueltige Server URL."));
         return;
     }
 
@@ -500,7 +510,7 @@ void NetworkClipboardClient::connectToServerUrl(const QString &serverUrl)
     setServerActive(false);
     updateServerName(name, value);
     saveSelectedServer();
-    setStatus(QStringLiteral("Prüfe Server: %1").arg(value));
+    setStatus(QStringLiteral("Pruefe Server: %1").arg(value));
     checkSelectedServer();
 }
 
@@ -616,7 +626,7 @@ QString NetworkClipboardClient::normalizedServerUrl(QString *errorMessage) const
     if (!url.isValid() || url.scheme().isEmpty() || url.host().isEmpty()
         || (url.scheme() != QStringLiteral("http") && url.scheme() != QStringLiteral("https"))) {
         if (errorMessage)
-            *errorMessage = QStringLiteral("Ungültige Server URL.");
+            *errorMessage = QStringLiteral("Ungueltige Server URL.");
         return {};
     }
 
@@ -664,7 +674,7 @@ void NetworkClipboardClient::withAvailableServer(const QString &actionStatus,
 
         const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
         if (object.value(QStringLiteral("service")).toString() != QStringLiteral("NetworkClipboard")) {
-            setStatus(QStringLiteral("Kein gültiger Network-Clipboard-Server."));
+            setStatus(QStringLiteral("Kein gueltiger Network-Clipboard-Server."));
             if (failureAction)
                 failureAction();
             reply->deleteLater();
@@ -1371,7 +1381,7 @@ void NetworkClipboardClient::finishKnownServerCheck()
     if (targetIndex < 0 && m_knownServerMisses < 3) {
         setServerActive(false);
         sendDiscoveryDatagrams();
-        setStatus(QStringLiteral("Prüfe bekannte Server..."));
+        setStatus(QStringLiteral("Pruefe bekannte Server..."));
         if (m_knownServerListChanged) {
             emit serversChanged();
             saveKnownServers();

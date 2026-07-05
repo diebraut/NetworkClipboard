@@ -28,17 +28,44 @@ ApplicationWindow {
         return Qt.platform.os === "ios" ? "iPhone" : "Android"
     }
 
+    function shortLogText(text) {
+        return text.slice(0, 80).replace(/\n/g, "\\n")
+    }
+
+    function debugState(event) {
+        console.log("NCQML " + event
+            + " imgLen=" + rawPreviewImageBase64.length
+            + " textLen=" + rawPreviewText.length
+            + " guardMs=" + Math.max(0, Math.round(localPublishGuardUntil - Date.now()))
+            + " autoSend=" + autoSendInFlight
+            + " waiting=" + waitingForServerText
+            + " serverActive=" + networkClipboard.serverActive)
+    }
+
     function syncClipboardToPreview() {
         if (localClipboard.hasImage()) {
             const fingerprint = localClipboard.imageFingerprint()
-            if (fingerprint.length === 0)
+            if (fingerprint.length === 0) {
+                debugState("local image fingerprint empty")
                 return
+            }
 
             const base64 = localClipboard.imageBase64()
-            if (base64.length === 0)
+            if (base64.length === 0) {
+                debugState("local image base64 empty fp=" + fingerprint.slice(0, 12))
                 return
+            }
 
             const networkOriginImage = localClipboard.imageFromNetworkClipboard()
+            console.log("NCQML local image candidate fp=" + fingerprint.slice(0, 12)
+                + " base64Len=" + base64.length
+                + " networkOrigin=" + networkOriginImage
+                + " observed=" + observedLocalImageFingerprint.slice(0, 12)
+                + " lastSent=" + lastAutoSentImageFingerprint.slice(0, 12))
+            if (networkOriginImage) {
+                debugState("ignore local network-origin image; server image remains authoritative")
+                return
+            }
             if (fingerprint !== observedLocalImageFingerprint) {
                 localPublishGuardUntil = Date.now() + 8000
                 recentLocalImageFingerprint = fingerprint
@@ -47,6 +74,7 @@ ApplicationWindow {
                 rawPreviewImageBase64 = base64
                 observedLocalClipboardText = ""
                 lastAutoSentText = ""
+                debugState("show local image fp=" + fingerprint.slice(0, 12))
             }
 
             if (networkClipboard.serverActive
@@ -54,6 +82,7 @@ ApplicationWindow {
                     && !autoSendInFlight
                     && !networkOriginImage
                     && fingerprint !== lastAutoSentImageFingerprint) {
+                console.log("NCQML send local image fp=" + fingerprint.slice(0, 12))
                 pendingAutoSendImageFingerprint = fingerprint
                 autoSendInFlight = true
                 networkClipboard.sendImage(base64, fingerprint, deviceName())
@@ -64,8 +93,11 @@ ApplicationWindow {
         const text = localClipboard.text()
         if (text.trim().length === 0) {
             if (rawPreviewImageBase64.length > 0) {
-                if (Date.now() < localPublishGuardUntil || recentLocalImageFingerprint.length > 0)
+                if (Date.now() < localPublishGuardUntil || recentLocalImageFingerprint.length > 0) {
+                    debugState("keep image despite empty local text")
                     return
+                }
+                debugState("clear image because local text empty and guard expired")
                 rawPreviewText = ""
                 rawPreviewImageBase64 = ""
                 observedLocalImageFingerprint = ""
@@ -83,6 +115,7 @@ ApplicationWindow {
         lastAutoSentImageFingerprint = ""
 
         if (rawPreviewText !== text) {
+            console.log("NCQML show local text and clear image text=" + shortLogText(text))
             rawPreviewText = text
             rawPreviewImageBase64 = ""
         }
@@ -129,7 +162,7 @@ ApplicationWindow {
     function serverListText(name, mainServer, active) {
         const role = mainServer ? "Main-Server" : "Subserver"
         return serverDisplayText(name, active)
-            + "<span style=\"color:#6b7280;\"> · " + role + "</span>"
+            + "<span style=\"color:#6b7280;\"> - " + role + "</span>"
     }
 
     function escapeHtml(text) {
@@ -213,9 +246,12 @@ ApplicationWindow {
     Connections {
         target: networkClipboard
         function onLatestReceived(text) {
+            console.log("NCQML latest text received len=" + text.length + " text=" + shortLogText(text))
             const forceUpdate = forceNextNetworkText
-            if (!forceUpdate && (autoSendInFlight || Date.now() < localPublishGuardUntil))
+            if (!forceUpdate && (autoSendInFlight || Date.now() < localPublishGuardUntil)) {
+                debugState("ignore latest text due guard")
                 return
+            }
 
             localPublishGuardUntil = 0
             forceNextNetworkText = false
@@ -229,6 +265,7 @@ ApplicationWindow {
             pendingAutoSendText = ""
             autoSendInFlight = false
             localClipboard.setText(text)
+            console.log("NCQML show latest text and clear image text=" + shortLogText(text))
             rawPreviewText = text
             rawPreviewImageBase64 = ""
             observedLocalImageFingerprint = ""
@@ -236,10 +273,13 @@ ApplicationWindow {
         }
 
         function onLatestImageReceived(base64) {
+            console.log("NCQML latest image received base64Len=" + base64.length)
             const forceUpdate = forceNextNetworkText
             const incomingFingerprint = localClipboard.imageFingerprintFromBase64(base64)
-            if (!forceUpdate && (autoSendInFlight || Date.now() < localPublishGuardUntil))
+            if (!forceUpdate && autoSendInFlight) {
+                debugState("ignore latest image while auto-send in flight")
                 return
+            }
             if (!forceUpdate
                     && recentLocalImageFingerprint.length > 0
                     && incomingFingerprint.length > 0
@@ -267,8 +307,12 @@ ApplicationWindow {
                 lastAutoSentText = ""
                 observedLocalClipboardText = ""
                 rawPreviewText = ""
-                if (rawPreviewImageBase64.length === 0)
+                if (rawPreviewImageBase64.length === 0 || base64.length > rawPreviewImageBase64.length) {
+                    console.log("NCQML replace local image with fuller server image oldLen="
+                        + rawPreviewImageBase64.length + " newLen=" + base64.length)
                     rawPreviewImageBase64 = base64
+                }
+                debugState("latest image already local fp=" + incomingFingerprint.slice(0, 12))
                 return
             }
 
@@ -280,6 +324,7 @@ ApplicationWindow {
             observedLocalClipboardText = ""
             rawPreviewText = ""
             rawPreviewImageBase64 = base64
+            debugState("show latest image fp=" + fingerprint.slice(0, 12))
 
             localPublishGuardUntil = Date.now() + 2500
             Qt.callLater(function() {
@@ -521,6 +566,7 @@ ApplicationWindow {
                     verticalAlignment: Image.AlignVCenter
                     cache: false
                     asynchronous: false
+                    onStatusChanged: console.log("NCQML image status=" + status + " imgLen=" + rawPreviewImageBase64.length)
                 }
             }
 

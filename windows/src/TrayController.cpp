@@ -1,4 +1,4 @@
-﻿#include "TrayController.h"
+#include "TrayController.h"
 
 #include <QAction>
 #include <QApplication>
@@ -50,6 +50,14 @@ QByteArray imagePngData(const QImage &sourceImage)
                              Qt::SmoothTransformation);
     }
     return {};
+}
+
+bool isLikelyPlaceholderImage(const QImage &image, const QByteArray &pngData)
+{
+    return !image.isNull()
+        && image.width() <= 1
+        && image.height() <= 1
+        && pngData.size() <= 1024;
 }
 
 QByteArray imageHash(const QImage &image)
@@ -354,6 +362,11 @@ void TrayController::processClipboardChange()
         const QImage image = m_clipboard->image();
         const QByteArray pngData = imagePngData(image);
         if (!pngData.isEmpty()) {
+            if (isLikelyPlaceholderImage(image, pngData)) {
+                tryPublishImageUrl(mimeData, m_clipboard->text().trimmed(), false, false, false);
+                return;
+            }
+
             const QByteArray hash = imageHash(QImage::fromData(pngData, "PNG"));
             if (now < m_ignoreClipboardChangesUntil && hash == m_ignoredClipboardImageHash)
                 return;
@@ -443,7 +456,12 @@ void TrayController::sendCurrentClipboard()
     const QMimeData *mimeData = m_clipboard->mimeData();
     if (mimeData && mimeData->hasImage()) {
         const QImage image = m_clipboard->image();
-        if (!imagePngData(image).isEmpty()) {
+        const QByteArray pngData = imagePngData(image);
+        if (!pngData.isEmpty()) {
+            if (isLikelyPlaceholderImage(image, pngData)) {
+                m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Windows clipboard contains only a placeholder image."));
+                return;
+            }
             publishClipboardImage(image, true, true);
             return;
         }
@@ -493,6 +511,12 @@ void TrayController::publishClipboardImage(const QImage &image, bool showSuccess
     if (pngData.isEmpty()) {
         if (showSuccessMessage)
             m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Windows clipboard contains no usable image."));
+        return;
+    }
+
+    if (isLikelyPlaceholderImage(image, pngData)) {
+        if (showSuccessMessage)
+            m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Windows clipboard contains only a placeholder image."));
         return;
     }
 
@@ -593,7 +617,10 @@ void TrayController::publishCurrentClipboardIfAvailable(bool force)
     const QMimeData *mimeData = m_clipboard->mimeData();
     if (mimeData && mimeData->hasImage()) {
         const QImage image = m_clipboard->image();
-        if (!imagePngData(image).isEmpty()) {
+        const QByteArray pngData = imagePngData(image);
+        if (!pngData.isEmpty()) {
+            if (isLikelyPlaceholderImage(image, pngData))
+                return;
             publishClipboardImage(image, false, force);
             return;
         }
