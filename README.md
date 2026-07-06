@@ -9,7 +9,7 @@ Local LAN clipboard for Windows, macOS, Android, and iOS.
 - `POST /api/clipboard` stores text or URLs.
 - `GET /api/clipboard/latest` returns the latest entry.
 - Windows clipboard changes are captured automatically when auto-send is enabled.
-- Tray action `Paste from Network` writes the latest network entry into the Windows clipboard.
+- Tray action `Paste from Network` writes the latest network entry into the Windows/macOS clipboard.
 - Bearer token authentication.
 - 1 MB max text payload.
 - Loop prevention when pasting from the network clipboard.

@@ -15,6 +15,8 @@ qt_add_executable(NetworkClipboardMacServer MACOSX_BUNDLE
     src/ApiServer.h
     src/ClipboardEntry.cpp
     src/ClipboardEntry.h
+    src/ClipboardContentWindow.cpp
+    src/ClipboardContentWindow.h
     src/ClipboardStore.cpp
     src/ClipboardStore.h
     src/MacServerController.cpp

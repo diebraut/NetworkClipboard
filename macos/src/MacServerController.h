@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ApiServer.h"
+#include "ClipboardContentWindow.h"
 #include "ClipboardEntry.h"
 #include "ClipboardStore.h"
 
@@ -29,6 +30,9 @@ private:
     void buildMenu();
     void onClipboardChanged();
     void processClipboardChange();
+    void showContent();
+    void updateContentWindow();
+    void pasteFromNetwork();
     void publishClipboardNow();
     void copyServerInfo();
     void clearHistory();
@@ -49,6 +53,7 @@ private:
     ApiServer m_server;
     QSystemTrayIcon m_tray;
     QMenu *m_menu = nullptr;
+    ClipboardContentWindow *m_contentWindow = nullptr;
     QAction *m_autoPublishAction = nullptr;
     QAction *m_masterAction = nullptr;
     QAction *m_startAtLoginAction = nullptr;

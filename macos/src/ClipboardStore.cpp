@@ -14,6 +14,15 @@ void ClipboardStore::setLatest(const ClipboardEntry &entry)
 {
     {
         QWriteLocker locker(&m_lock);
+        if (!m_history.isEmpty()) {
+            const ClipboardEntry &latest = m_history.first();
+            if (latest.type == entry.type
+                && latest.mimeType == entry.mimeType
+                && latest.content == entry.content) {
+                return;
+            }
+        }
+
         m_history.prepend(entry);
         qsizetype storedContentSize = 0;
         int retainedItems = 0;

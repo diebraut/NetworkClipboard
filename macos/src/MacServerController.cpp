@@ -25,6 +25,8 @@
 #include <QUuid>
 #include <QVariant>
 
+#include <optional>
+
 namespace {
 constexpr quint16 ApiPort = 8787;
 constexpr qint64 ClipboardIgnoreWindowMs = 1500;
@@ -86,6 +88,30 @@ QByteArray imageHash(const QImage &image)
             normalized.width() * 4));
     }
     return hash.result();
+}
+
+QString normalizedTextPayload(QString text)
+{
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    return text.trimmed();
+}
+
+bool sameClipboardPayload(const ClipboardEntry &left, const ClipboardEntry &right)
+{
+    if (left.type == QStringLiteral("image") || right.type == QStringLiteral("image")) {
+        if (left.type != QStringLiteral("image") || right.type != QStringLiteral("image"))
+            return false;
+
+        const QImage leftImage = QImage::fromData(QByteArray::fromBase64(left.content.toLatin1()), "PNG");
+        const QImage rightImage = QImage::fromData(QByteArray::fromBase64(right.content.toLatin1()), "PNG");
+        if (leftImage.isNull() || rightImage.isNull())
+            return left.content == right.content;
+
+        return imageHash(leftImage) == imageHash(rightImage);
+    }
+
+    return normalizedTextPayload(left.content) == normalizedTextPayload(right.content);
 }
 
 QImage imageFromClipboard(QClipboard *clipboard, const QMimeData *mimeData)
@@ -234,6 +260,8 @@ MacServerController::MacServerController(QObject *parent)
 
     connect(&m_store, &ClipboardStore::latestChanged, this, [this](const ClipboardEntry &entry) {
         applyEntryToClipboard(entry, false, false);
+        if (m_contentWindow && m_contentWindow->isVisible())
+            updateContentWindow();
     });
 
     QTimer::singleShot(0, this, &MacServerController::startServer);
@@ -261,6 +289,13 @@ void MacServerController::startServer()
 void MacServerController::buildMenu()
 {
     m_menu = new QMenu();
+
+    QAction *showContentAction = m_menu->addAction(QStringLiteral("Show Content"));
+    connect(showContentAction, &QAction::triggered, this, &MacServerController::showContent);
+    m_menu->addSeparator();
+
+    QAction *pasteAction = m_menu->addAction(QStringLiteral("Paste from Network"));
+    connect(pasteAction, &QAction::triggered, this, &MacServerController::pasteFromNetwork);
 
     QAction *publishAction = m_menu->addAction(QStringLiteral("Send Clipboard Now"));
     connect(publishAction, &QAction::triggered, this, &MacServerController::publishClipboardNow);
@@ -346,6 +381,49 @@ void MacServerController::publishClipboardNow()
     }
 
     publishClipboardText(m_clipboard->text().trimmed(), true, true);
+}
+
+void MacServerController::showContent()
+{
+    if (!m_contentWindow) {
+        m_contentWindow = new ClipboardContentWindow();
+        connect(m_contentWindow, &ClipboardContentWindow::makeCurrentRequested, this, [this](ClipboardEntry entry) {
+            entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            entry.deviceId = m_deviceId;
+            entry.deviceName = deviceName();
+            entry.timestamp = QDateTime::currentSecsSinceEpoch();
+            m_store.setLatest(entry);
+        });
+    }
+
+    updateContentWindow();
+
+    m_contentWindow->show();
+    m_contentWindow->raise();
+    m_contentWindow->activateWindow();
+}
+
+void MacServerController::updateContentWindow()
+{
+    if (!m_contentWindow)
+        return;
+
+    const QList<ClipboardEntry> history = m_store.history();
+    if (!history.isEmpty())
+        m_contentWindow->setEntries(history.mid(0, 15));
+    else
+        m_contentWindow->setMessage(QStringLiteral("No network clipboard entry available."));
+}
+
+void MacServerController::pasteFromNetwork()
+{
+    const std::optional<ClipboardEntry> latest = m_store.latest();
+    if (!latest) {
+        showStatus(QStringLiteral("No network clipboard entry available."));
+        return;
+    }
+
+    applyEntryToClipboard(*latest, true, true);
 }
 
 void MacServerController::copyServerInfo()
@@ -482,7 +560,9 @@ void MacServerController::publishClipboardText(const QString &text, bool showMes
 
     m_lastPublishedContent = text;
     m_lastPublishedImageHash.clear();
-    m_store.setLatest(entry);
+    const std::optional<ClipboardEntry> latest = m_store.latest();
+    if (!latest || !sameClipboardPayload(entry, *latest))
+        m_store.setLatest(entry);
     if (showMessage)
         showStatus(QStringLiteral("Sent macOS clipboard to server."));
 }
@@ -518,7 +598,9 @@ void MacServerController::publishClipboardImage(const QImage &image, bool showMe
 
     m_lastPublishedImageHash = hash;
     m_lastPublishedContent.clear();
-    m_store.setLatest(entry);
+    const std::optional<ClipboardEntry> latest = m_store.latest();
+    if (!latest || !sameClipboardPayload(entry, *latest))
+        m_store.setLatest(entry);
     if (showMessage)
         showStatus(QStringLiteral("Sent macOS image clipboard to server."));
 }

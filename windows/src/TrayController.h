@@ -1,11 +1,14 @@
 ﻿#pragma once
 
+#include "ClipboardContentWindow.h"
 #include "ClipboardEntry.h"
 
 #include <QDateTime>
 #include <QByteArray>
+#include <QList>
 #include <QNetworkAccessManager>
 #include <QObject>
+#include <QSize>
 #include <QSystemTrayIcon>
 #include <QTimer>
 #include <QUrl>
@@ -32,10 +35,16 @@ private:
     void onClipboardChanged();
     void processClipboardChange();
     void pollLatestFromServer();
+    void fetchClipboardHistory();
     void sendAgentHeartbeat();
+    void showContent();
+    void updateContentWindow();
+    bool updateContentWindowFromImageUrl(const QMimeData *mimeData, const QString &fallbackText);
+    bool updateContentWindowFromLatestNetworkImage();
     void sendCurrentClipboard();
     void pasteFromNetwork();
     void copyServerInfo();
+    void startServerServiceIfNeeded();
     void toggleServerService();
     void updateServiceStatus();
     void setAutoSendEnabled(bool enabled);
@@ -56,6 +65,7 @@ private:
     QTimer m_clipboardChangeTimer;
     QSystemTrayIcon m_tray;
     QMenu *m_menu = nullptr;
+    ClipboardContentWindow *m_contentWindow = nullptr;
     QAction *m_autoSendAction = nullptr;
     QAction *m_masterAction = nullptr;
     QAction *m_serviceAction = nullptr;
@@ -75,10 +85,15 @@ private:
     QByteArray m_lastSeenNetworkImageHash;
     QString m_lastPublishedContent;
     QByteArray m_lastPublishedImageHash;
+    qint64 m_recentImagePublishUntil = 0;
+    QSize m_recentPublishedImageSize;
+    std::optional<ClipboardEntry> m_latestNetworkEntry;
+    QList<ClipboardEntry> m_networkHistory;
     bool m_sendInFlight = false;
     std::optional<ClipboardEntry> m_pendingEntry;
     bool m_pendingShowSuccessMessage = false;
     quint64 m_clipboardChangeGeneration = 0;
     int m_clipboardRetriesRemaining = 0;
     QString m_pendingImageUrlDownload;
+    QString m_pendingContentImageUrlDownload;
 };

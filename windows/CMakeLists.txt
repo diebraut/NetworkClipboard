@@ -21,6 +21,8 @@ qt_add_executable(NetworkClipboardWindows
     src/ApiServer.h
     src/ClipboardEntry.cpp
     src/ClipboardEntry.h
+    src/ClipboardContentWindow.cpp
+    src/ClipboardContentWindow.h
     src/ClipboardStore.cpp
     src/ClipboardStore.h
     src/TrayController.cpp

@@ -9,7 +9,9 @@
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QHostAddress>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QImage>
 #include <QMenu>
 #include <QMimeData>
@@ -24,6 +26,7 @@
 
 namespace {
 constexpr qint64 ClipboardIgnoreWindowMs = 1500;
+constexpr qint64 RecentImagePublishSuppressMs = 6000;
 
 QByteArray imagePngData(const QImage &sourceImage)
 {
@@ -78,6 +81,30 @@ QByteArray imageHash(const QImage &image)
     return hash.result();
 }
 
+QString normalizedTextPayload(QString text)
+{
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    return text.trimmed();
+}
+
+bool sameClipboardPayload(const ClipboardEntry &left, const ClipboardEntry &right)
+{
+    if (left.type == QStringLiteral("image") || right.type == QStringLiteral("image")) {
+        if (left.type != QStringLiteral("image") || right.type != QStringLiteral("image"))
+            return false;
+
+        const QImage leftImage = QImage::fromData(QByteArray::fromBase64(left.content.toLatin1()), "PNG");
+        const QImage rightImage = QImage::fromData(QByteArray::fromBase64(right.content.toLatin1()), "PNG");
+        if (leftImage.isNull() || rightImage.isNull())
+            return left.content == right.content;
+
+        return imageHash(leftImage) == imageHash(rightImage);
+    }
+
+    return normalizedTextPayload(left.content) == normalizedTextPayload(right.content);
+}
+
 QString withWindowsLineEndings(QString text)
 {
     text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
@@ -129,6 +156,27 @@ bool runElevatedServiceCommand(const QString &command)
     };
 
     return QProcess::startDetached(QStringLiteral("powershell.exe"), arguments);
+#else
+    Q_UNUSED(command)
+    return false;
+#endif
+}
+
+bool runServiceCommand(const QString &command)
+{
+#ifdef Q_OS_WIN
+    QProcess process;
+    process.start(QStringLiteral("sc.exe"), {command, QStringLiteral("NetworkClipboardServer")});
+    if (!process.waitForFinished(2500))
+        return false;
+
+    const QString output = QString::fromLocal8Bit(process.readAllStandardOutput())
+        + QString::fromLocal8Bit(process.readAllStandardError());
+    return process.exitStatus() == QProcess::NormalExit
+        && (process.exitCode() == 0 || output.contains(QStringLiteral("START_PENDING"), Qt::CaseInsensitive)
+            || output.contains(QStringLiteral("RUNNING"), Qt::CaseInsensitive)
+            || output.contains(QStringLiteral("bereits"), Qt::CaseInsensitive)
+            || output.contains(QStringLiteral("already"), Qt::CaseInsensitive));
 #else
     Q_UNUSED(command)
     return false;
@@ -286,6 +334,10 @@ TrayController::TrayController(const QString &deviceId, const QString &deviceNam
 
     m_menu = new QMenu();
 
+    QAction *showContentAction = m_menu->addAction(QStringLiteral("Show Content"));
+    connect(showContentAction, &QAction::triggered, this, &TrayController::showContent);
+    m_menu->addSeparator();
+
     QAction *pasteAction = m_menu->addAction(QStringLiteral("Paste from Network"));
     connect(pasteAction, &QAction::triggered, this, &TrayController::pasteFromNetwork);
 
@@ -326,6 +378,7 @@ TrayController::TrayController(const QString &deviceId, const QString &deviceNam
     connect(&m_pollTimer, &QTimer::timeout, this, &TrayController::updateServiceStatus);
     m_pollTimer.setInterval(2000);
     m_pollTimer.start();
+    QTimer::singleShot(0, this, &TrayController::startServerServiceIfNeeded);
     updateServiceStatus();
 }
 
@@ -339,6 +392,8 @@ void TrayController::setServerInfo(const QUrl &serverUrl, quint16 port, const QS
     m_serverUrl = serverUrl;
     m_port = port;
     m_token = token;
+    QTimer::singleShot(1000, this, &TrayController::pollLatestFromServer);
+    QTimer::singleShot(1200, this, &TrayController::fetchClipboardHistory);
     scheduleCurrentClipboardPublish(false);
 }
 
@@ -347,9 +402,16 @@ void TrayController::onClipboardChanged()
     const quint64 generation = ++m_clipboardChangeGeneration;
     m_clipboardRetriesRemaining = 12;
     m_clipboardChangeTimer.start();
+    QTimer::singleShot(250, this, [this]() {
+        if (m_contentWindow && m_contentWindow->isVisible() && m_latestNetworkEntry)
+            updateContentWindow();
+    });
     QTimer::singleShot(900, this, [this, generation]() {
-        if (generation == m_clipboardChangeGeneration)
+        if (generation == m_clipboardChangeGeneration) {
             processClipboardChange();
+            if (m_contentWindow && m_contentWindow->isVisible() && m_latestNetworkEntry)
+                updateContentWindow();
+        }
     });
 }
 
@@ -432,8 +494,54 @@ void TrayController::pollLatestFromServer()
         QJsonParseError parseError;
         const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &parseError);
         if (parseError.error == QJsonParseError::NoError && document.isObject()) {
-            applyNetworkEntryToClipboard(ClipboardEntry::fromJson(document.object()), false, false);
+            const ClipboardEntry entry = ClipboardEntry::fromJson(document.object());
+            m_latestNetworkEntry = entry;
+            if (m_networkHistory.isEmpty() || m_networkHistory.first().id != entry.id)
+                m_networkHistory.prepend(entry);
+            while (m_networkHistory.size() > 15)
+                m_networkHistory.removeLast();
+            if (m_contentWindow && m_contentWindow->isVisible())
+                updateContentWindow();
+            applyNetworkEntryToClipboard(entry, false, false);
         }
+
+        reply->deleteLater();
+    });
+}
+
+void TrayController::fetchClipboardHistory()
+{
+    if (m_token.isEmpty() || !m_serverUrl.isValid())
+        return;
+
+    QNetworkReply *reply = m_network.get(apiRequest(QStringLiteral("/api/clipboard/history")));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            reply->deleteLater();
+            return;
+        }
+
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+            reply->deleteLater();
+            return;
+        }
+
+        QList<ClipboardEntry> entries;
+        const QJsonArray items = document.object().value(QStringLiteral("items")).toArray();
+        for (const QJsonValue &item : items) {
+            if (item.isObject())
+                entries.append(ClipboardEntry::fromJson(item.toObject()));
+            if (entries.size() >= 15)
+                break;
+        }
+
+        m_networkHistory = entries;
+        if (!m_networkHistory.isEmpty())
+            m_latestNetworkEntry = m_networkHistory.first();
+        if (m_contentWindow && m_contentWindow->isVisible())
+            updateContentWindow();
 
         reply->deleteLater();
     });
@@ -449,6 +557,102 @@ void TrayController::sendAgentHeartbeat()
         apiRequest(QStringLiteral("/api/agent/heartbeat")),
         QJsonDocument(heartbeat).toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+}
+
+void TrayController::showContent()
+{
+    if (!m_contentWindow) {
+        m_contentWindow = new ClipboardContentWindow();
+        connect(m_contentWindow, &ClipboardContentWindow::makeCurrentRequested, this, [this](ClipboardEntry entry) {
+            entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            entry.deviceId = m_deviceId;
+            entry.deviceName = m_deviceName;
+            entry.timestamp = QDateTime::currentSecsSinceEpoch();
+            sendEntryToServer(entry, true);
+        });
+    }
+
+    updateContentWindow();
+
+    m_contentWindow->show();
+    m_contentWindow->raise();
+    m_contentWindow->activateWindow();
+
+    pollLatestFromServer();
+    fetchClipboardHistory();
+}
+
+void TrayController::updateContentWindow()
+{
+    if (!m_contentWindow)
+        return;
+
+    if (!m_networkHistory.isEmpty())
+        m_contentWindow->setEntries(m_networkHistory);
+    else if (m_latestNetworkEntry && !m_latestNetworkEntry->content.isEmpty())
+        m_contentWindow->setEntries(QList<ClipboardEntry>{*m_latestNetworkEntry});
+    else
+        m_contentWindow->setMessage(QStringLiteral("No network clipboard entry available."));
+}
+
+bool TrayController::updateContentWindowFromImageUrl(const QMimeData *mimeData, const QString &fallbackText)
+{
+    if (!m_contentWindow)
+        return false;
+
+    const QUrl imageUrl = clipboardImageUrlCandidate(mimeData, fallbackText);
+    if (!imageUrl.isValid())
+        return false;
+
+    const QString imageKey = QStringLiteral("content-image:") + imageUrl.toString(QUrl::FullyEncoded);
+    if (m_pendingContentImageUrlDownload == imageKey)
+        return true;
+
+    m_pendingContentImageUrlDownload = imageKey;
+    m_contentWindow->setMessage(QStringLiteral("Loading image..."));
+
+    QNetworkRequest request(imageUrl);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setRawHeader("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
+    request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NetworkClipboard/1.0");
+
+    QNetworkReply *reply = m_network.get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, imageKey, fallbackText]() {
+        if (m_pendingContentImageUrlDownload == imageKey)
+            m_pendingContentImageUrlDownload.clear();
+
+        if (!m_contentWindow) {
+            reply->deleteLater();
+            return;
+        }
+
+        QImage image;
+        if (reply->error() == QNetworkReply::NoError)
+            image.loadFromData(reply->readAll());
+
+        reply->deleteLater();
+
+        if (!image.isNull()) {
+            m_contentWindow->setImageContent(image);
+            return;
+        }
+
+        if (fallbackText.isEmpty())
+            m_contentWindow->setMessage(QStringLiteral("Windows clipboard contains no usable image."));
+        else
+            m_contentWindow->setTextContent(fallbackText);
+    });
+
+    return true;
+}
+
+bool TrayController::updateContentWindowFromLatestNetworkImage()
+{
+    if (!m_contentWindow || !m_latestNetworkEntry || m_latestNetworkEntry->type != QStringLiteral("image"))
+        return false;
+
+    m_contentWindow->setEntry(*m_latestNetworkEntry);
+    return true;
 }
 
 void TrayController::sendCurrentClipboard()
@@ -523,6 +727,13 @@ void TrayController::publishClipboardImage(const QImage &image, bool showSuccess
     const QByteArray hash = imageHash(QImage::fromData(pngData, "PNG"));
     if (!force && hash == m_lastPublishedImageHash)
         return;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (!force
+        && now < m_recentImagePublishUntil
+        && image.size() == m_recentPublishedImageSize) {
+        return;
+    }
 
     ClipboardEntry entry;
     entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -665,6 +876,7 @@ void TrayController::pasteFromNetwork()
         }
 
         const ClipboardEntry entry = ClipboardEntry::fromJson(document.object());
+        m_latestNetworkEntry = entry;
         applyNetworkEntryToClipboard(entry, true, true);
         reply->deleteLater();
     });
@@ -681,6 +893,24 @@ void TrayController::copyServerInfo()
     m_ignoredClipboardContent = info.trimmed();
     m_clipboard->setText(info);
     m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Server info copied to clipboard."));
+}
+
+void TrayController::startServerServiceIfNeeded()
+{
+    if (isServiceRunning()) {
+        updateServiceStatus();
+        return;
+    }
+
+    if (!runServiceCommand(QStringLiteral("start")))
+        runElevatedServiceCommand(QStringLiteral("start"));
+
+    QTimer::singleShot(2500, this, &TrayController::updateServiceStatus);
+    QTimer::singleShot(5000, this, [this]() {
+        updateServiceStatus();
+        if (m_serviceRunning)
+            scheduleCurrentClipboardPublish(true);
+    });
 }
 
 void TrayController::toggleServerService()
@@ -731,6 +961,12 @@ void TrayController::setMasterServer(bool isMaster)
 
 void TrayController::sendEntryToServer(const ClipboardEntry &entry, bool showSuccessMessage)
 {
+    if (m_latestNetworkEntry && sameClipboardPayload(entry, *m_latestNetworkEntry)) {
+        if (showSuccessMessage)
+            m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Clipboard entry is already current."));
+        return;
+    }
+
     if (m_sendInFlight) {
         m_pendingEntry = entry;
         m_pendingShowSuccessMessage = showSuccessMessage;
@@ -743,11 +979,23 @@ void TrayController::sendEntryToServer(const ClipboardEntry &entry, bool showSuc
         if (reply->error() != QNetworkReply::NoError) {
             m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Could not send to server: %1").arg(reply->errorString()));
         } else {
+            m_latestNetworkEntry = entry;
+            if (m_networkHistory.isEmpty() || m_networkHistory.first().id != entry.id)
+                m_networkHistory.prepend(entry);
+            while (m_networkHistory.size() > 15)
+                m_networkHistory.removeLast();
+            if (m_contentWindow && m_contentWindow->isVisible())
+                updateContentWindow();
             m_lastSeenNetworkEntryId = entry.id;
             if (entry.type == QStringLiteral("image")) {
                 m_lastPublishedImageHash = imageHash(
                     QImage::fromData(QByteArray::fromBase64(entry.content.toLatin1()), "PNG"));
                 m_lastPublishedContent.clear();
+                const QImage image = QImage::fromData(QByteArray::fromBase64(entry.content.toLatin1()), "PNG");
+                if (!image.isNull()) {
+                    m_recentPublishedImageSize = image.size();
+                    m_recentImagePublishUntil = QDateTime::currentMSecsSinceEpoch() + RecentImagePublishSuppressMs;
+                }
             } else {
                 m_lastPublishedContent = entry.content;
                 m_lastPublishedImageHash.clear();
