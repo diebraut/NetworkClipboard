@@ -5,9 +5,12 @@
 #include <QDesktopServices>
 #include <QDateTime>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QImage>
 #include <QLabel>
 #include <QListWidget>
+#include <QListWidgetItem>
+#include <QPainter>
 #include <QPixmap>
 #include <QPushButton>
 #include <QResizeEvent>
@@ -18,6 +21,8 @@
 #include <QVBoxLayout>
 
 namespace {
+constexpr int ThumbnailSize = 44;
+
 QString entryDedupeKey(const ClipboardEntry &entry)
 {
     if (entry.type == QStringLiteral("image")) {
@@ -46,6 +51,37 @@ QString entryDedupeKey(const ClipboardEntry &entry)
     content.replace(QLatin1Char('\r'), QLatin1Char('\n'));
     return QStringLiteral("text\n") + content.trimmed();
 }
+
+QIcon entryIcon(const ClipboardEntry &entry)
+{
+    QPixmap pixmap(ThumbnailSize, ThumbnailSize);
+    pixmap.fill(Qt::transparent);
+
+    if (entry.type == QStringLiteral("image")) {
+        const QImage image = QImage::fromData(QByteArray::fromBase64(entry.content.toLatin1()), "PNG");
+        if (!image.isNull()) {
+            const QPixmap thumbnail = QPixmap::fromImage(image).scaled(
+                ThumbnailSize,
+                ThumbnailSize,
+                Qt::KeepAspectRatio,
+                Qt::SmoothTransformation);
+            QPainter painter(&pixmap);
+            painter.drawPixmap((ThumbnailSize - thumbnail.width()) / 2,
+                               (ThumbnailSize - thumbnail.height()) / 2,
+                               thumbnail);
+            return QIcon(pixmap);
+        }
+    }
+
+    pixmap.fill(QColor(235, 235, 235));
+    QPainter painter(&pixmap);
+    painter.setPen(QColor(120, 120, 120));
+    painter.drawRect(0, 0, ThumbnailSize - 1, ThumbnailSize - 1);
+    painter.drawText(pixmap.rect(), Qt::AlignCenter, entry.type == QStringLiteral("url")
+        ? QStringLiteral("URL")
+        : QStringLiteral("TXT"));
+    return QIcon(pixmap);
+}
 }
 
 ClipboardContentWindow::ClipboardContentWindow(QWidget *parent)
@@ -57,6 +93,7 @@ ClipboardContentWindow::ClipboardContentWindow(QWidget *parent)
     m_historyList = new QListWidget(this);
     m_historyList->setMaximumWidth(240);
     m_historyList->setMinimumWidth(190);
+    m_historyList->setIconSize(QSize(ThumbnailSize, ThumbnailSize));
     connect(m_historyList, &QListWidget::currentRowChanged, this, &ClipboardContentWindow::selectEntry);
 
     m_titleLabel = new QLabel(this);
@@ -155,8 +192,11 @@ void ClipboardContentWindow::setEntries(const QList<ClipboardEntry> &entries)
 
     m_historyList->clear();
 
-    for (int index = 0; index < m_entries.size(); ++index)
-        m_historyList->addItem(entryLabel(m_entries.at(index), index));
+    for (int index = 0; index < m_entries.size(); ++index) {
+        auto *item = new QListWidgetItem(entryIcon(m_entries.at(index)), entryLabel(m_entries.at(index), index));
+        item->setSizeHint(QSize(0, ThumbnailSize + 10));
+        m_historyList->addItem(item);
+    }
 
     if (m_entries.isEmpty()) {
         m_selectedIndex = -1;

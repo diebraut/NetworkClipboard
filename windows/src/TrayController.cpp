@@ -1000,6 +1000,7 @@ void TrayController::sendEntryToServer(const ClipboardEntry &entry, bool showSuc
                 m_lastPublishedContent = entry.content;
                 m_lastPublishedImageHash.clear();
             }
+            applyNetworkEntryToClipboard(entry, false, true);
             if (showSuccessMessage)
                 m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Sent Windows clipboard to server."));
         }

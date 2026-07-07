@@ -393,6 +393,7 @@ void MacServerController::showContent()
             entry.deviceName = deviceName();
             entry.timestamp = QDateTime::currentSecsSinceEpoch();
             m_store.setLatest(entry);
+            applyEntryToClipboard(entry, false, true);
         });
     }
 
