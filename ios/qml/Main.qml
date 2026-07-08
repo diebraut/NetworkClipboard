@@ -26,6 +26,8 @@ ApplicationWindow {
     property bool waitingForServerText: false
     property double localPublishGuardUntil: 0
     property int clipboardSyncRetries: 0
+    property bool currentPreviewFromLocalClipboard: false
+    property string currentPreviewHistoryKey: ""
     readonly property bool compactLayout: width < 520
 
     function deviceName() {
@@ -60,7 +62,7 @@ ApplicationWindow {
                 observedLocalImageFingerprint = fingerprint
                 observedLocalClipboardText = ""
                 lastAutoSentText = ""
-                showPreviewImage(base64)
+                showLocalPreviewImage(base64, fingerprint)
             }
 
             if (networkClipboard.serverActive
@@ -94,9 +96,7 @@ ApplicationWindow {
         observedLocalImageFingerprint = ""
         lastAutoSentImageFingerprint = ""
         recentNetworkImageFingerprint = ""
-        rawPreviewText = text
-        rawPreviewImageBase64 = ""
-        rawPreviewImageSource = ""
+        showLocalPreviewText(text)
         pendingPasteboardImageBase64 = ""
         pendingPasteboardImageFingerprint = ""
         deferredPasteboardImageTimer.stop()
@@ -124,6 +124,126 @@ ApplicationWindow {
         rawPreviewImageBase64 = base64
         rawPreviewImageSource = ""
         imagePreview.triedFileFallback = false
+    }
+
+    function historyKey(type, content) {
+        return type + ":" + content
+    }
+
+    function addHistoryEntry(type, content) {
+        if (content.length === 0)
+            return
+
+        const key = historyKey(type, content)
+        for (let i = 0; i < clipboardHistoryModel.count; ++i) {
+            if (clipboardHistoryModel.get(i).key === key) {
+                clipboardHistoryModel.move(i, 0, 1)
+                return
+            }
+        }
+
+        clipboardHistoryModel.insert(0, {
+            "type": type,
+            "content": content,
+            "key": key,
+            "createdAt": Qt.formatTime(new Date(), "HH:mm")
+        })
+
+        while (clipboardHistoryModel.count > 20)
+            clipboardHistoryModel.remove(clipboardHistoryModel.count - 1)
+    }
+
+    function moveCurrentLocalPreviewToHistory() {
+        if (!currentPreviewFromLocalClipboard)
+            return
+
+        if (rawPreviewImageBase64.length > 0)
+            addHistoryEntry("image", rawPreviewImageBase64)
+        else if (rawPreviewText.trim().length > 0)
+            addHistoryEntry("text", rawPreviewText)
+
+        currentPreviewFromLocalClipboard = false
+        currentPreviewHistoryKey = ""
+    }
+
+    function showLocalPreviewText(text) {
+        rawPreviewText = text
+        rawPreviewImageBase64 = ""
+        rawPreviewImageSource = ""
+        currentPreviewFromLocalClipboard = true
+        currentPreviewHistoryKey = historyKey("text", text)
+        if (networkClipboard.serverActive)
+            addHistoryEntry("text", text)
+    }
+
+    function showLocalPreviewImage(base64, fingerprint) {
+        showPreviewImage(base64)
+        currentPreviewFromLocalClipboard = true
+        currentPreviewHistoryKey = historyKey("image", fingerprint.length > 0 ? fingerprint : base64)
+        if (networkClipboard.serverActive)
+            addHistoryEntry("image", base64)
+    }
+
+    function showNetworkPreviewText(text) {
+        rawPreviewText = text
+        rawPreviewImageBase64 = ""
+        rawPreviewImageSource = ""
+        currentPreviewFromLocalClipboard = false
+        currentPreviewHistoryKey = ""
+    }
+
+    function showNetworkPreviewImage(base64) {
+        showPreviewImage(base64)
+        currentPreviewFromLocalClipboard = false
+        currentPreviewHistoryKey = ""
+    }
+
+    function setHistoryEntryCurrent(index) {
+        if (index < 0 || index >= clipboardHistoryModel.count)
+            return
+
+        const entry = clipboardHistoryModel.get(index)
+        currentPreviewFromLocalClipboard = true
+        currentPreviewHistoryKey = entry.key
+
+        if (entry.type === "image") {
+            const fingerprint = localClipboard.imageFingerprintFromBase64(entry.content)
+            localPublishGuardUntil = networkClipboard.serverActive ? Date.now() + 3000 : 0
+            observedLocalImageFingerprint = fingerprint
+            observedLocalClipboardText = ""
+            lastAutoSentText = ""
+            showPreviewImage(entry.content)
+
+            if (localClipboard.setImageBase64(entry.content))
+                observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
+
+            if (networkClipboard.serverActive
+                    && !imageSendInFlight
+                    && fingerprint !== recentNetworkImageFingerprint
+                    && fingerprint !== lastAutoSentImageFingerprint) {
+                pendingAutoSendImageFingerprint = fingerprint
+                imageSendInFlight = true
+                networkClipboard.sendImage(entry.content, fingerprint, deviceName())
+            }
+            return
+        }
+
+        const text = entry.content
+        localPublishGuardUntil = networkClipboard.serverActive ? Date.now() + 3000 : 0
+        observedLocalClipboardText = text
+        observedLocalImageFingerprint = ""
+        lastAutoSentImageFingerprint = ""
+        recentNetworkImageFingerprint = ""
+        rawPreviewText = text
+        rawPreviewImageBase64 = ""
+        rawPreviewImageSource = ""
+        localClipboard.setText(text)
+        observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
+
+        if (networkClipboard.serverActive && text !== lastAutoSentText) {
+            lastAutoSentText = text
+            networkClipboard.sendText(text, deviceName())
+        }
     }
 
     function appInForeground() {
@@ -282,11 +402,10 @@ ApplicationWindow {
 
             lastAutoSentText = text
             lastAutoSentImageFingerprint = ""
+            observedLocalClipboardText = text
             localClipboard.setText(text)
             observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
-            rawPreviewText = text
-            rawPreviewImageBase64 = ""
-            rawPreviewImageSource = ""
+            showNetworkPreviewText(text)
             pendingPasteboardImageBase64 = ""
             pendingPasteboardImageFingerprint = ""
             deferredPasteboardImageTimer.stop()
@@ -314,13 +433,13 @@ ApplicationWindow {
                 lastAutoSentImageFingerprint = incomingFingerprint
                 observedLocalClipboardText = ""
                 lastAutoSentText = ""
-                showPreviewImage(base64)
+                showNetworkPreviewImage(base64)
                 return
             }
 
             observedLocalClipboardText = ""
             lastAutoSentText = ""
-            showPreviewImage(base64)
+            showNetworkPreviewImage(base64)
 
             observedLocalImageFingerprint = incomingFingerprint
             recentNetworkImageFingerprint = incomingFingerprint
@@ -350,6 +469,8 @@ ApplicationWindow {
             if (networkClipboard.serverActive) {
                 observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
                 lastAutoSentText = observedLocalClipboardText
+                moveCurrentLocalPreviewToHistory()
+                localPublishGuardUntil = 0
                 refreshNetworkClipboard(true)
             } else {
                 lastAutoSentText = ""
@@ -369,6 +490,10 @@ ApplicationWindow {
         repeat: true
         running: Qt.application.state === Qt.ApplicationActive && networkClipboard.serverActive
         onTriggered: refreshNetworkClipboard(false)
+    }
+
+    ListModel {
+        id: clipboardHistoryModel
     }
 
     ColumnLayout {
@@ -493,10 +618,12 @@ ApplicationWindow {
             Layout.fillHeight: true
 
             property string fieldsetTitle: rawPreviewImageBase64.length > 0
-                ? "Bild Netz-Zwischenablage"
-                : (networkClipboard.serverActive
-                    ? "Inhalt Netz-Zwischenablage"
-                    : "Letzte bekannte Netz-Zwischenablage")
+                ? (currentPreviewFromLocalClipboard && !networkClipboard.serverActive
+                    ? "Bild Lokale-Zwischenablage"
+                    : "Bild Netz-Zwischenablage")
+                : (currentPreviewFromLocalClipboard && !networkClipboard.serverActive
+                    ? "Inhalt Lokale-Zwischenablage"
+                    : "Inhalt Netz-Zwischenablage")
 
             Rectangle {
                 id: clipboardBox
@@ -507,56 +634,158 @@ ApplicationWindow {
                 border.width: 1
                 radius: 2
 
-                ScrollView {
-                    visible: rawPreviewImageBase64.length === 0
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 8
-                    anchors.topMargin: 12
-                    anchors.bottomMargin: 8
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    anchors.topMargin: 14
+                    spacing: 8
 
-                    TextArea {
-                        id: preview
-                        readOnly: true
-                        wrapMode: TextEdit.Wrap
-                        selectByMouse: true
-                        selectByKeyboard: true
-                        persistentSelection: true
-                        textFormat: TextEdit.RichText
-                        text: richClipboardText(rawPreviewText)
-                        onLinkActivated: function(link) { Qt.openUrlExternally(link) }
-                        background: Rectangle {
-                            color: "transparent"
-                            border.width: 0
+                    Rectangle {
+                        Layout.preferredWidth: root.compactLayout ? 154 : 210
+                        Layout.fillHeight: true
+                        color: "transparent"
+                        border.color: "#e5e7eb"
+                        border.width: 1
+                        radius: 2
+
+                        Label {
+                            visible: clipboardHistoryModel.count === 0
+                            anchors.centerIn: parent
+                            width: parent.width - 16
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.WordWrap
+                            text: "Kein lokaler Verlauf"
+                            color: "#6b7280"
+                        }
+
+                        ListView {
+                            visible: clipboardHistoryModel.count > 0
+                            anchors.fill: parent
+                            anchors.margins: 6
+                            clip: true
+                            spacing: 6
+                            model: clipboardHistoryModel
+
+                            delegate: Rectangle {
+                                width: ListView.view.width
+                                height: 76
+                                color: "transparent"
+                                border.color: "#e5e7eb"
+                                border.width: 1
+                                radius: 2
+
+                                Image {
+                                    id: historyThumb
+                                    visible: model.type === "image"
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.margins: 6
+                                    width: 44
+                                    height: 44
+                                    source: visible ? "data:image/png;base64," + model.content : ""
+                                    fillMode: Image.PreserveAspectFit
+                                    cache: false
+                                    asynchronous: true
+                                }
+
+                                Rectangle {
+                                    visible: model.type !== "image"
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.margins: 6
+                                    width: 44
+                                    height: 44
+                                    color: "#f3f4f6"
+                                    border.color: "#d1d5db"
+                                    border.width: 1
+
+                                    Label {
+                                        anchors.centerIn: parent
+                                        text: "TXT"
+                                        font.pixelSize: 11
+                                        color: "#6b7280"
+                                    }
+                                }
+
+                                Text {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 56
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 6
+                                    anchors.top: parent.top
+                                    anchors.topMargin: 6
+                                    height: 36
+                                    textFormat: Text.RichText
+                                    wrapMode: Text.WordWrap
+                                    maximumLineCount: 2
+                                    elide: Text.ElideRight
+                                    text: model.type === "image"
+                                        ? "<span style=\"font-weight:600;\">Bild</span><br><span style=\"color:#6b7280;\">"
+                                            + model.createdAt + "</span>"
+                                        : richClipboardText(model.content)
+                                }
+
+                                Button {
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 6
+                                    anchors.bottom: parent.bottom
+                                    anchors.bottomMargin: 5
+                                    height: 24
+                                    text: "Aktuell"
+                                    onClicked: setHistoryEntryCurrent(index)
+                                }
+                            }
                         }
                     }
-                }
 
-                Image {
-                    id: imagePreview
-                    property bool triedFileFallback: false
-                    visible: rawPreviewImageBase64.length > 0
-                    anchors.fill: parent
-                    anchors.margins: 12
-                    source: visible
-                        ? (rawPreviewImageSource.length > 0
-                            ? rawPreviewImageSource
-                            : "data:image/png;base64," + rawPreviewImageBase64)
-                        : ""
-                    fillMode: Image.PreserveAspectFit
-                    horizontalAlignment: Image.AlignHCenter
-                    verticalAlignment: Image.AlignVCenter
-                    cache: false
-                    asynchronous: false
-                    onStatusChanged: {
-                        if (status === Image.Error
-                                && !triedFileFallback
-                                && rawPreviewImageBase64.length > 0) {
-                            triedFileFallback = true
-                            rawPreviewImageSource = localClipboard.setPreviewImageBase64(rawPreviewImageBase64)
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+
+                        ScrollView {
+                            visible: rawPreviewImageBase64.length === 0
+                            anchors.fill: parent
+
+                            TextArea {
+                                id: preview
+                                readOnly: true
+                                wrapMode: TextEdit.Wrap
+                                selectByMouse: true
+                                selectByKeyboard: true
+                                persistentSelection: true
+                                textFormat: TextEdit.RichText
+                                text: richClipboardText(rawPreviewText)
+                                onLinkActivated: function(link) { Qt.openUrlExternally(link) }
+                                background: Rectangle {
+                                    color: "transparent"
+                                    border.width: 0
+                                }
+                            }
+                        }
+
+                        Image {
+                            id: imagePreview
+                            property bool triedFileFallback: false
+                            visible: rawPreviewImageBase64.length > 0
+                            anchors.fill: parent
+                            source: visible
+                                ? (rawPreviewImageSource.length > 0
+                                    ? rawPreviewImageSource
+                                    : "data:image/png;base64," + rawPreviewImageBase64)
+                                : ""
+                            fillMode: Image.PreserveAspectFit
+                            horizontalAlignment: Image.AlignHCenter
+                            verticalAlignment: Image.AlignVCenter
+                            cache: false
+                            asynchronous: false
+                            onStatusChanged: {
+                                if (status === Image.Error
+                                        && !triedFileFallback
+                                        && rawPreviewImageBase64.length > 0) {
+                                    triedFileFallback = true
+                                    rawPreviewImageSource = localClipboard.setPreviewImageBase64(rawPreviewImageBase64)
+                                }
+                            }
                         }
                     }
                 }
