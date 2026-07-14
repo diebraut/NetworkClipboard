@@ -21,18 +21,7 @@ int main(int argc, char *argv[])
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("networkClipboard"), &client);
     engine.rootContext()->setContextProperty(QStringLiteral("localClipboard"), &clipboard);
-
-    const QList<QUrl> qmlUrls{
-        QUrl(QStringLiteral("qrc:/qt/qml/NetworkClipboardAndroid/Main.qml")),
-        QUrl(QStringLiteral("qrc:/qt/qml/NetworkClipboardAndroid/qml/Main.qml")),
-        QUrl(QStringLiteral("qrc:/NetworkClipboardAndroid/Main.qml"))
-    };
-
-    for (const QUrl &url : qmlUrls) {
-        engine.load(url);
-        if (!engine.rootObjects().isEmpty())
-            break;
-    }
+    engine.load(QUrl(QStringLiteral("qrc:/NetworkClipboardAndroid/Main.qml")));
 
     if (engine.rootObjects().isEmpty())
         return 1;

@@ -20,6 +20,9 @@ public:
     Q_INVOKABLE bool hasImage() const;
     Q_INVOKABLE QString imageFingerprint() const;
     Q_INVOKABLE QString imageFingerprintFromBase64(const QString &base64) const;
+    Q_INVOKABLE QString thumbnailBase64FromBase64(const QString &base64, int maxSize = 96) const;
+    Q_INVOKABLE QString saveHistoryImageBase64(const QString &base64) const;
+    Q_INVOKABLE QString loadHistoryImageBase64(const QString &imageId) const;
     Q_INVOKABLE QString imageBase64() const;
     Q_INVOKABLE bool setImageBase64(const QString &base64);
     Q_INVOKABLE QString setPreviewImageBase64(const QString &base64);

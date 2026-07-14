@@ -230,6 +230,11 @@ void NetworkClipboardClient::sendImage(const QString &base64Png,
         return;
     }
 
+    qInfo() << "NetworkClipboardAndroid: sending clipboard image to" << normalizedServerUrl()
+            << "fingerprint=" << fingerprint.left(12)
+            << "base64Len=" << base64Png.size()
+            << "pngBytes=" << pngData.size();
+
     QJsonObject body{
         {QStringLiteral("deviceId"), QStringLiteral("mobile-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces))},
         {QStringLiteral("deviceName"), deviceName},
@@ -250,9 +255,16 @@ void NetworkClipboardClient::sendImage(const QString &base64Png,
                                     const QJsonObject stored = QJsonDocument::fromJson(reply->readAll()).object();
                                     m_latestEntryId = stored.value(QStringLiteral("id")).toString();
                                     setStatus(QStringLiteral("Bild gesendet."));
+                                    qInfo() << "NetworkClipboardAndroid: clipboard image sent"
+                                            << "id=" << m_latestEntryId
+                                            << "fingerprint=" << fingerprint.left(12);
                                     emit imageSent(fingerprint);
                                 } else {
-                                    setStatus(replyErrorMessage(reply));
+                                    const QString message = replyErrorMessage(reply);
+                                    qWarning() << "NetworkClipboardAndroid: image send failed"
+                                               << "error=" << reply->error()
+                                               << "message=" << message;
+                                    setStatus(message);
                                     emit imageSendFailed(fingerprint);
                                 }
                                 reply->deleteLater();

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtCore
 import QtQuick.Layouts
 
 ApplicationWindow {
@@ -13,6 +14,7 @@ ApplicationWindow {
     property string observedLocalClipboardText: ""
     property string rawPreviewText: ""
     property string rawPreviewImageBase64: ""
+    property string pendingPreviewImageBase64: ""
     property string rawPreviewImageSource: ""
     property string pendingPasteboardImageBase64: ""
     property string pendingPasteboardImageFingerprint: ""
@@ -28,6 +30,10 @@ ApplicationWindow {
     property int clipboardSyncRetries: 0
     property bool currentPreviewFromLocalClipboard: false
     property string currentPreviewHistoryKey: ""
+    property int currentPreviewHistoryIndex: -1
+    property bool loadingClipboardHistory: false
+    property bool previewImageLoading: false
+    property double localClipboardSyncPausedUntil: 0
     readonly property bool compactLayout: width < 520
 
     function deviceName() {
@@ -35,6 +41,16 @@ ApplicationWindow {
     }
 
     function syncClipboardToPreview() {
+        if (Date.now() < localClipboardSyncPausedUntil) {
+            clipboardSyncRetries = 0
+            return
+        }
+
+        if (isBrowsingHistoryEntry()) {
+            clipboardSyncRetries = 0
+            return
+        }
+
         let pasteboardChangeCount = -1
         if (Qt.platform.os === "ios") {
             pasteboardChangeCount = localClipboard.pasteboardChangeCount()
@@ -111,9 +127,31 @@ ApplicationWindow {
     }
 
     function scheduleClipboardSync() {
+        if (Date.now() < localClipboardSyncPausedUntil)
+            return
+
+        if (isBrowsingHistoryEntry())
+            return
+
         clipboardSyncRetries = Qt.platform.os === "ios" ? 20 : 12
         clipboardSyncTimer.interval = Qt.platform.os === "ios" ? 700 : 350
         clipboardSyncTimer.restart()
+    }
+
+    function isBrowsingHistoryEntry() {
+        return currentPreviewHistoryIndex > 0
+    }
+
+    function findHistoryIndex(key) {
+        if (key.length === 0)
+            return -1
+
+        for (let i = 0; i < clipboardHistoryModel.count; ++i) {
+            if (clipboardHistoryModel.get(i).key === key)
+                return i
+        }
+
+        return -1
     }
 
     function showPreviewImage(base64) {
@@ -122,35 +160,248 @@ ApplicationWindow {
             return
 
         rawPreviewImageBase64 = base64
+        pendingPreviewImageBase64 = ""
+        previewImageLoading = false
         rawPreviewImageSource = ""
         imagePreview.triedFileFallback = false
+    }
+
+    function showSelectedHistoryImage(base64) {
+        rawPreviewText = ""
+        rawPreviewImageBase64 = ""
+        rawPreviewImageSource = ""
+        pendingPreviewImageBase64 = base64
+        previewImageLoading = true
+        selectedImageLoadTimer.restart()
     }
 
     function historyKey(type, content) {
         return type + ":" + content
     }
 
-    function addHistoryEntry(type, content) {
-        if (content.length === 0)
+    function historyCanScroll(view) {
+        return view && historyContentWidth(view) > view.width + 1
+    }
+
+    function historyContentWidth(view) {
+        if (!view || clipboardHistoryModel.count <= 0)
+            return 0
+
+        return clipboardHistoryModel.count * historyTileWidth(view)
+            + Math.max(0, clipboardHistoryModel.count - 1) * view.spacing
+    }
+
+    function historyMaxContentX(view) {
+        if (!historyCanScroll(view))
+            return 0
+        return Math.max(0, historyContentWidth(view) - view.width)
+    }
+
+    function clampHistoryContentX(view) {
+        if (!view)
             return
 
-        const key = historyKey(type, content)
+        const maxContentX = historyMaxContentX(view)
+        if (view.contentX > maxContentX)
+            view.contentX = maxContentX
+        else if (view.contentX < 0)
+            view.contentX = 0
+    }
+
+    function historyDesiredTileWidth(view) {
+        const containerWidth = clipboardBox && clipboardBox.width > 0
+            ? clipboardBox.width
+            : (view ? view.width : 0)
+        const widthFromGroupBox = Math.round(containerWidth * 0.07)
+        return Math.max(64, widthFromGroupBox)
+    }
+
+    function historyVisibleTileCount(view) {
+        if (!view || view.width <= 0)
+            return 1
+
+        return Math.max(1, Math.floor((view.width + view.spacing)
+            / (historyDesiredTileWidth(view) + view.spacing)))
+    }
+
+    function historyTileWidth(view) {
+        const count = historyVisibleTileCount(view)
+        if (!view || view.width <= 0)
+            return 64
+
+        return Math.max(64, Math.floor((view.width - view.spacing * (count - 1)) / count))
+    }
+
+    function saveClipboardHistory() {
+        if (loadingClipboardHistory)
+            return
+
+        const entries = []
+        for (let i = 0; i < clipboardHistoryModel.count && i < 15; ++i) {
+            const entry = clipboardHistoryModel.get(i)
+            entries.push({
+                "type": entry.type,
+                "content": entry.content,
+                "key": entry.key,
+                "imageId": entry.imageId || "",
+                "thumbnail": entry.thumbnail || "",
+                "preview": entry.preview || entry.thumbnail || "",
+                "createdAt": entry.createdAt
+            })
+        }
+        clipboardHistorySettings.entriesJson = JSON.stringify(entries)
+    }
+
+    function historyThumbnail(type, content) {
+        if (type !== "image")
+            return ""
+        return localClipboard.thumbnailBase64FromBase64(content, 96)
+    }
+
+    function historyPreview(type, content) {
+        if (type !== "image")
+            return ""
+        return localClipboard.thumbnailBase64FromBase64(content, 640)
+    }
+
+    function displayImageForHistoryEntry(entry) {
+        return entry.preview || entry.thumbnail || ""
+    }
+
+    function previewFromFullImage(base64) {
+        const preview = historyPreview("image", base64)
+        return preview.length > 0 ? preview : historyThumbnail("image", base64)
+    }
+
+    function showRestoredHistoryEntry(index) {
+        if (index < 0 || index >= clipboardHistoryModel.count)
+            return
+
+        const entry = clipboardHistoryModel.get(index)
+        currentPreviewFromLocalClipboard = false
+        currentPreviewHistoryKey = entry.key
+        currentPreviewHistoryIndex = index
+        localClipboardSyncPausedUntil = Date.now() + 8000
+
+        if (entry.type === "image") {
+            const preview = displayImageForHistoryEntry(entry)
+            if (preview.length === 0)
+                return
+            showPreviewImage(preview)
+            return
+        }
+
+        rawPreviewText = entry.content
+        rawPreviewImageBase64 = ""
+        pendingPreviewImageBase64 = ""
+        previewImageLoading = false
+        rawPreviewImageSource = ""
+    }
+
+    function restoreClipboardHistory() {
+        loadingClipboardHistory = true
+        clipboardHistoryModel.clear()
+
+        try {
+            const entries = JSON.parse(clipboardHistorySettings.entriesJson)
+            if (Array.isArray(entries)) {
+                for (let i = 0; i < entries.length && i < 15; ++i) {
+                    const entry = entries[i]
+                    if (!entry || typeof entry.type !== "string" || typeof entry.content !== "string")
+                        continue
+
+                    const key = typeof entry.key === "string" && entry.key.length > 0
+                        ? entry.key
+                        : historyKey(entry.type, entry.content)
+                    const imageId = entry.type === "image"
+                        ? (typeof entry.imageId === "string" && entry.imageId.length > 0
+                            ? entry.imageId
+                            : localClipboard.saveHistoryImageBase64(entry.content))
+                        : ""
+                    const thumbnail = typeof entry.thumbnail === "string" ? entry.thumbnail : ""
+                    const preview = typeof entry.preview === "string" && entry.preview.length > 0
+                        ? entry.preview
+                        : (entry.type === "image" && entry.content.length > 0 ? historyPreview(entry.type, entry.content) : thumbnail)
+                    clipboardHistoryModel.append({
+                        "type": entry.type,
+                        "content": entry.type === "image" ? "" : entry.content,
+                        "key": entry.type === "image" && imageId.length > 0 ? historyKey(entry.type, imageId) : key,
+                        "imageId": imageId,
+                        "thumbnail": thumbnail,
+                        "preview": preview,
+                        "createdAt": typeof entry.createdAt === "string" ? entry.createdAt : ""
+                    })
+                }
+            }
+        } catch (error) {
+            clipboardHistorySettings.entriesJson = "[]"
+        }
+
+        loadingClipboardHistory = false
+        if (clipboardHistoryModel.count > 0) {
+            showRestoredHistoryEntry(0)
+            saveClipboardHistory()
+        }
+    }
+
+    function addHistoryEntry(type, content) {
+        if (content.length === 0)
+            return -1
+
+        const imageId = type === "image" ? localClipboard.saveHistoryImageBase64(content) : ""
+        if (type === "image" && imageId.length === 0)
+            return -1
+
+        const storedContent = type === "image" ? "" : content
+        const key = type === "image" ? historyKey(type, imageId) : historyKey(type, content)
         for (let i = 0; i < clipboardHistoryModel.count; ++i) {
             if (clipboardHistoryModel.get(i).key === key) {
                 clipboardHistoryModel.move(i, 0, 1)
-                return
+                saveClipboardHistory()
+                return 0
             }
         }
 
         clipboardHistoryModel.insert(0, {
             "type": type,
-            "content": content,
+            "content": storedContent,
             "key": key,
+            "imageId": imageId,
+            "thumbnail": historyThumbnail(type, content),
+            "preview": historyPreview(type, content),
             "createdAt": Qt.formatTime(new Date(), "HH:mm")
         })
 
-        while (clipboardHistoryModel.count > 20)
+        while (clipboardHistoryModel.count > 15)
             clipboardHistoryModel.remove(clipboardHistoryModel.count - 1)
+
+        saveClipboardHistory()
+        return 0
+    }
+
+    function historyEntryTypeLabel(type, content) {
+        if (type === "image")
+            return "Bild"
+        if (content.toLowerCase().startsWith("http://") || content.toLowerCase().startsWith("https://"))
+            return "URL"
+        return "Text"
+    }
+
+    function historyEntryIconLabel(type, content) {
+        if (type === "image")
+            return ""
+        return historyEntryTypeLabel(type, content) === "URL" ? "URL" : "TXT"
+    }
+
+    function historyEntryPreview(type, content, createdAt) {
+        if (type === "image")
+            return "<span style=\"font-weight:600;\">Bild</span><br><span style=\"color:#6b7280;\">" + createdAt + "</span>"
+
+        let preview = content.replace(/\s+/g, " ").trim()
+        if (preview.length > 42)
+            preview = preview.slice(0, 39) + "..."
+        return "<span style=\"font-weight:600;\">" + historyEntryTypeLabel(type, content)
+            + "</span><br><span style=\"color:#6b7280;\">" + escapeHtml(preview) + "</span>"
     }
 
     function moveCurrentLocalPreviewToHistory() {
@@ -164,6 +415,7 @@ ApplicationWindow {
 
         currentPreviewFromLocalClipboard = false
         currentPreviewHistoryKey = ""
+        currentPreviewHistoryIndex = -1
     }
 
     function showLocalPreviewText(text) {
@@ -172,16 +424,16 @@ ApplicationWindow {
         rawPreviewImageSource = ""
         currentPreviewFromLocalClipboard = true
         currentPreviewHistoryKey = historyKey("text", text)
-        if (networkClipboard.serverActive)
-            addHistoryEntry("text", text)
+        currentPreviewHistoryIndex = networkClipboard.serverActive ? addHistoryEntry("text", text) : -1
     }
 
     function showLocalPreviewImage(base64, fingerprint) {
-        showPreviewImage(base64)
         currentPreviewFromLocalClipboard = true
-        currentPreviewHistoryKey = historyKey("image", fingerprint.length > 0 ? fingerprint : base64)
-        if (networkClipboard.serverActive)
-            addHistoryEntry("image", base64)
+        currentPreviewHistoryIndex = networkClipboard.serverActive ? addHistoryEntry("image", base64) : -1
+        currentPreviewHistoryKey = currentPreviewHistoryIndex >= 0 ? clipboardHistoryModel.get(currentPreviewHistoryIndex).key : historyKey("image", fingerprint)
+        showPreviewImage(currentPreviewHistoryIndex >= 0
+            ? displayImageForHistoryEntry(clipboardHistoryModel.get(currentPreviewHistoryIndex))
+            : previewFromFullImage(base64))
     }
 
     function showNetworkPreviewText(text) {
@@ -189,13 +441,45 @@ ApplicationWindow {
         rawPreviewImageBase64 = ""
         rawPreviewImageSource = ""
         currentPreviewFromLocalClipboard = false
-        currentPreviewHistoryKey = ""
+        currentPreviewHistoryKey = historyKey("text", text)
+        currentPreviewHistoryIndex = addHistoryEntry("text", text)
     }
 
     function showNetworkPreviewImage(base64) {
-        showPreviewImage(base64)
         currentPreviewFromLocalClipboard = false
-        currentPreviewHistoryKey = ""
+        currentPreviewHistoryIndex = addHistoryEntry("image", base64)
+        currentPreviewHistoryKey = currentPreviewHistoryIndex >= 0 ? clipboardHistoryModel.get(currentPreviewHistoryIndex).key : ""
+        showPreviewImage(currentPreviewHistoryIndex >= 0
+            ? displayImageForHistoryEntry(clipboardHistoryModel.get(currentPreviewHistoryIndex))
+            : previewFromFullImage(base64))
+    }
+
+    function selectHistoryEntry(index) {
+        if (index < 0 || index >= clipboardHistoryModel.count)
+            return
+
+        const entry = clipboardHistoryModel.get(index)
+        currentPreviewFromLocalClipboard = false
+        currentPreviewHistoryKey = entry.key
+        currentPreviewHistoryIndex = index
+
+        if (entry.type === "image") {
+            const preview = displayImageForHistoryEntry(entry)
+            if (preview.length === 0)
+                return
+            showSelectedHistoryImage(preview)
+            return
+        }
+
+        rawPreviewText = entry.content
+        rawPreviewImageBase64 = ""
+        pendingPreviewImageBase64 = ""
+        previewImageLoading = false
+        rawPreviewImageSource = ""
+    }
+
+    function selectedHistoryIndex() {
+        return currentPreviewHistoryIndex
     }
 
     function setHistoryEntryCurrent(index) {
@@ -203,27 +487,34 @@ ApplicationWindow {
             return
 
         const entry = clipboardHistoryModel.get(index)
+        if (index > 0)
+            clipboardHistoryModel.move(index, 0, 1)
         currentPreviewFromLocalClipboard = true
         currentPreviewHistoryKey = entry.key
+        currentPreviewHistoryIndex = 0
+        saveClipboardHistory()
 
         if (entry.type === "image") {
-            const fingerprint = localClipboard.imageFingerprintFromBase64(entry.content)
+            const content = entry.content.length > 0 ? entry.content : localClipboard.loadHistoryImageBase64(entry.imageId || "")
+            if (content.length === 0)
+                return
+            const fingerprint = localClipboard.imageFingerprintFromBase64(content)
             localPublishGuardUntil = networkClipboard.serverActive ? Date.now() + 3000 : 0
             observedLocalImageFingerprint = fingerprint
             observedLocalClipboardText = ""
             lastAutoSentText = ""
-            showPreviewImage(entry.content)
+            showPreviewImage(content)
 
-            if (localClipboard.setImageBase64(entry.content))
+            if (localClipboard.setImageBase64(content))
                 observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
 
             if (networkClipboard.serverActive
                     && !imageSendInFlight
-                    && fingerprint !== recentNetworkImageFingerprint
-                    && fingerprint !== lastAutoSentImageFingerprint) {
+                && fingerprint !== recentNetworkImageFingerprint
+                && fingerprint !== lastAutoSentImageFingerprint) {
                 pendingAutoSendImageFingerprint = fingerprint
                 imageSendInFlight = true
-                networkClipboard.sendImage(entry.content, fingerprint, deviceName())
+                networkClipboard.sendImage(content, fingerprint, deviceName())
             }
             return
         }
@@ -251,6 +542,12 @@ ApplicationWindow {
     }
 
     function refreshNetworkClipboard(force) {
+        if (!force && Date.now() < localClipboardSyncPausedUntil)
+            return
+
+        if (!force && isBrowsingHistoryEntry())
+            return
+
         if (Date.now() < localPublishGuardUntil)
             return
 
@@ -320,6 +617,7 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        restoreClipboardHistory()
         scheduleClipboardSync()
         if (networkClipboard.serverActive)
             refreshNetworkClipboard(true)
@@ -338,6 +636,16 @@ ApplicationWindow {
                 --clipboardSyncRetries
                 restart()
             }
+        }
+    }
+
+    Timer {
+        id: selectedImageLoadTimer
+        interval: 1
+        repeat: false
+        onTriggered: {
+            showPreviewImage(pendingPreviewImageBase64)
+            pendingPreviewImageBase64 = ""
         }
     }
 
@@ -393,6 +701,12 @@ ApplicationWindow {
         function onLatestReceived(text) {
             localPublishGuardUntil = 0
             const forceUpdate = forceNextNetworkText
+            if (!forceUpdate && isBrowsingHistoryEntry()) {
+                addHistoryEntry("text", text)
+                currentPreviewHistoryIndex = findHistoryIndex(currentPreviewHistoryKey)
+                return
+            }
+
             forceNextNetworkText = false
             waitingForServerText = false
             serverReadGuardTimer.stop()
@@ -416,6 +730,13 @@ ApplicationWindow {
 
         function onLatestImageReceived(base64) {
             localPublishGuardUntil = 0
+            const forceUpdate = forceNextNetworkText
+            if (!forceUpdate && isBrowsingHistoryEntry()) {
+                addHistoryEntry("image", base64)
+                currentPreviewHistoryIndex = findHistoryIndex(currentPreviewHistoryKey)
+                return
+            }
+
             forceNextNetworkText = false
             waitingForServerText = false
             serverReadGuardTimer.stop()
@@ -494,6 +815,12 @@ ApplicationWindow {
 
     ListModel {
         id: clipboardHistoryModel
+    }
+
+    Settings {
+        id: clipboardHistorySettings
+        category: "clipboardHistory"
+        property string entriesJson: "[]"
     }
 
     ColumnLayout {
@@ -634,117 +961,35 @@ ApplicationWindow {
                 border.width: 1
                 radius: 2
 
-                RowLayout {
+                ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 8
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
                     anchors.topMargin: 14
+                    anchors.bottomMargin: 8
                     spacing: 8
 
-                    Rectangle {
-                        Layout.preferredWidth: root.compactLayout ? 154 : 210
-                        Layout.fillHeight: true
-                        color: "transparent"
-                        border.color: "#e5e7eb"
-                        border.width: 1
-                        radius: 2
-
-                        Label {
-                            visible: clipboardHistoryModel.count === 0
-                            anchors.centerIn: parent
-                            width: parent.width - 16
-                            horizontalAlignment: Text.AlignHCenter
-                            wrapMode: Text.WordWrap
-                            text: "Kein lokaler Verlauf"
-                            color: "#6b7280"
-                        }
-
-                        ListView {
-                            visible: clipboardHistoryModel.count > 0
-                            anchors.fill: parent
-                            anchors.margins: 6
-                            clip: true
-                            spacing: 6
-                            model: clipboardHistoryModel
-
-                            delegate: Rectangle {
-                                width: ListView.view.width
-                                height: 76
-                                color: "transparent"
-                                border.color: "#e5e7eb"
-                                border.width: 1
-                                radius: 2
-
-                                Image {
-                                    id: historyThumb
-                                    visible: model.type === "image"
-                                    anchors.left: parent.left
-                                    anchors.top: parent.top
-                                    anchors.margins: 6
-                                    width: 44
-                                    height: 44
-                                    source: visible ? "data:image/png;base64," + model.content : ""
-                                    fillMode: Image.PreserveAspectFit
-                                    cache: false
-                                    asynchronous: true
-                                }
-
-                                Rectangle {
-                                    visible: model.type !== "image"
-                                    anchors.left: parent.left
-                                    anchors.top: parent.top
-                                    anchors.margins: 6
-                                    width: 44
-                                    height: 44
-                                    color: "#f3f4f6"
-                                    border.color: "#d1d5db"
-                                    border.width: 1
-
-                                    Label {
-                                        anchors.centerIn: parent
-                                        text: "TXT"
-                                        font.pixelSize: 11
-                                        color: "#6b7280"
-                                    }
-                                }
-
-                                Text {
-                                    anchors.left: parent.left
-                                    anchors.leftMargin: 56
-                                    anchors.right: parent.right
-                                    anchors.rightMargin: 6
-                                    anchors.top: parent.top
-                                    anchors.topMargin: 6
-                                    height: 36
-                                    textFormat: Text.RichText
-                                    wrapMode: Text.WordWrap
-                                    maximumLineCount: 2
-                                    elide: Text.ElideRight
-                                    text: model.type === "image"
-                                        ? "<span style=\"font-weight:600;\">Bild</span><br><span style=\"color:#6b7280;\">"
-                                            + model.createdAt + "</span>"
-                                        : richClipboardText(model.content)
-                                }
-
-                                Button {
-                                    anchors.right: parent.right
-                                    anchors.rightMargin: 6
-                                    anchors.bottom: parent.bottom
-                                    anchors.bottomMargin: 5
-                                    height: 24
-                                    text: "Aktuell"
-                                    onClicked: setHistoryEntryCurrent(index)
-                                }
-                            }
-                        }
-                    }
-
-                    Item {
+                    ColumnLayout {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
+                        spacing: 8
+
+                        Label {
+                            text: clipboardHistoryModel.count > 0
+                                ? (currentPreviewHistoryKey.length > 0 && clipboardHistoryModel.count > 0
+                                    && clipboardHistoryModel.get(0).key === currentPreviewHistoryKey
+                                    ? "Aktueller Eintrag"
+                                    : "Alter Eintrag")
+                                : ""
+                            color: "#6b7280"
+                            Layout.fillWidth: true
+                            visible: text.length > 0
+                        }
 
                         ScrollView {
-                            visible: rawPreviewImageBase64.length === 0
-                            anchors.fill: parent
+                            visible: rawPreviewImageBase64.length === 0 && !previewImageLoading
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
 
                             TextArea {
                                 id: preview
@@ -767,7 +1012,8 @@ ApplicationWindow {
                             id: imagePreview
                             property bool triedFileFallback: false
                             visible: rawPreviewImageBase64.length > 0
-                            anchors.fill: parent
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
                             source: visible
                                 ? (rawPreviewImageSource.length > 0
                                     ? rawPreviewImageSource
@@ -785,6 +1031,189 @@ ApplicationWindow {
                                     triedFileFallback = true
                                     rawPreviewImageSource = localClipboard.setPreviewImageBase64(rawPreviewImageBase64)
                                 }
+                            }
+                        }
+
+                        BusyIndicator {
+                            visible: previewImageLoading
+                            running: visible
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+
+                        Button {
+                            Layout.alignment: Qt.AlignRight
+                            text: "Make Current"
+                            visible: selectedHistoryIndex() > 0
+                            onClicked: {
+                                const index = selectedHistoryIndex()
+                                if (index > 0)
+                                    setHistoryEntryCurrent(index)
+                            }
+                        }
+                    }
+
+                    Item {
+                        property int historyScrollbarGap: 5
+                        property int historyScrollbarHeight: 12
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.max(102, historyDesiredTileWidth(historyListView)
+                            + historyScrollbarGap * 2 + historyScrollbarHeight)
+
+                        Label {
+                            visible: clipboardHistoryModel.count === 0
+                            anchors.centerIn: parent
+                            horizontalAlignment: Text.AlignHCenter
+                            text: "Kein lokaler Verlauf"
+                            color: "#6b7280"
+                        }
+
+                        ListView {
+                            id: historyListView
+                            visible: clipboardHistoryModel.count > 0
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            height: Math.max(72, parent.height
+                                - parent.historyScrollbarGap * 2
+                                - parent.historyScrollbarHeight)
+                            clip: true
+                            currentIndex: currentPreviewHistoryIndex
+                            orientation: ListView.Horizontal
+                            spacing: 6
+                            model: clipboardHistoryModel
+                            onContentXChanged: clampHistoryContentX(historyListView)
+
+                            delegate: Item {
+                                width: historyTileWidth(historyListView)
+                                height: width
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    color: index === 0 ? "#eef2ff" : "transparent"
+                                    border.color: index === 0 ? "#c7d2fe" : "#e5e7eb"
+                                    border.width: 1
+                                    radius: 2
+                                }
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    color: "transparent"
+                                    border.color: model.key === currentPreviewHistoryKey ? "#111827" : "transparent"
+                                    border.width: model.key === currentPreviewHistoryKey ? 2 : 0
+                                    radius: 2
+                                }
+
+                                Rectangle {
+                                    id: historyEntryThumb
+                                    anchors.top: parent.top
+                                    anchors.topMargin: 6
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    width: Math.min(38, parent.width - 6)
+                                    height: width
+                                    color: model.type === "image" ? "transparent" : "#f3f4f6"
+                                    border.color: "#d1d5db"
+                                    border.width: 1
+
+                                    Image {
+                                        visible: model.type === "image"
+                                        anchors.fill: parent
+                                        anchors.margins: 1
+                                        source: visible && model.thumbnail
+                                            ? "data:image/png;base64," + model.thumbnail
+                                            : ""
+                                        sourceSize.width: historyEntryThumb.width
+                                        sourceSize.height: historyEntryThumb.height
+                                        fillMode: Image.PreserveAspectFit
+                                        cache: true
+                                        asynchronous: true
+                                    }
+
+                                    Label {
+                                        visible: model.type !== "image"
+                                        anchors.centerIn: parent
+                                        text: historyEntryIconLabel(model.type, model.content)
+                                        font.pixelSize: 11
+                                        color: "#6b7280"
+                                    }
+                                }
+
+                                Text {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 4
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 4
+                                    anchors.top: historyEntryThumb.bottom
+                                    anchors.topMargin: 4
+                                    anchors.bottom: parent.bottom
+                                    anchors.bottomMargin: 4
+                                    font.pixelSize: 10
+                                    horizontalAlignment: Text.AlignHCenter
+                                    textFormat: Text.PlainText
+                                    wrapMode: Text.WordWrap
+                                    maximumLineCount: 2
+                                    elide: Text.ElideRight
+                                    text: (index === 0 ? "Aktuell" : "Alt") + "\n" + historyEntryTypeLabel(model.type, model.content)
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: selectHistoryEntry(index)
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            id: historyScrollbarTrack
+                            visible: historyListView.visible && historyCanScroll(historyListView)
+                            anchors.left: historyListView.left
+                            anchors.right: historyListView.right
+                            anchors.top: historyListView.bottom
+                            anchors.topMargin: parent.historyScrollbarGap
+                            height: parent.historyScrollbarHeight
+                            radius: height / 2
+                            color: "#e5e7eb"
+                            z: 2
+
+                            Rectangle {
+                                height: parent.height
+                                radius: height / 2
+                                color: "#6b7280"
+                                width: Math.max(36, parent.width * historyListView.width
+                                    / Math.max(historyContentWidth(historyListView), historyListView.width))
+                                x: historyMaxContentX(historyListView) <= 0
+                                    ? 0
+                                    : (parent.width - width) * historyListView.contentX
+                                        / historyMaxContentX(historyListView)
+                            }
+                        }
+
+                        MouseArea {
+                            id: historyScrollbarTouchArea
+                            property real pressContentX: 0
+                            property real pressX: 0
+                            visible: historyListView.visible && historyCanScroll(historyListView)
+                            anchors.left: historyListView.left
+                            anchors.right: historyListView.right
+                            anchors.top: historyListView.bottom
+                            anchors.topMargin: 0
+                            height: parent.historyScrollbarGap + parent.historyScrollbarHeight + parent.historyScrollbarGap
+                            z: 3
+
+                            onPressed: function(mouse) {
+                                pressX = mouse.x
+                                pressContentX = historyListView.contentX
+                                mouse.accepted = true
+                            }
+
+                            onPositionChanged: function(mouse) {
+                                const maxContentX = historyMaxContentX(historyListView)
+                                if (maxContentX <= 0)
+                                    return
+
+                                const delta = mouse.x - pressX
+                                const target = pressContentX + (delta / Math.max(1, width)) * maxContentX
+                                historyListView.contentX = Math.max(0, Math.min(maxContentX, target))
+                                mouse.accepted = true
                             }
                         }
                     }

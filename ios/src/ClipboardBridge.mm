@@ -74,6 +74,14 @@ QByteArray networkPngData(const QImage &sourceImage)
     return {};
 }
 
+QString historyImageDirPath()
+{
+    const QString basePath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir dir(basePath);
+    dir.mkpath(QStringLiteral("history-images"));
+    return dir.filePath(QStringLiteral("history-images"));
+}
+
 bool pasteboardMayStillProvideImage(UIPasteboard *pasteboard)
 {
     if (pasteboard == nil)
@@ -347,6 +355,53 @@ QString ClipboardBridge::imageFingerprintFromBase64(const QString &base64) const
     if (image.isNull())
         return {};
     return QString::fromLatin1(imageFingerprintBytes(image).toHex());
+}
+
+QString ClipboardBridge::thumbnailBase64FromBase64(const QString &base64, int maxSize) const
+{
+    const QImage image = QImage::fromData(QByteArray::fromBase64(base64.toLatin1()), "PNG");
+    if (image.isNull())
+        return {};
+
+    const int boundedMaxSize = qBound(24, maxSize, 1024);
+    const QImage thumbnail = image.scaled(boundedMaxSize,
+                                          boundedMaxSize,
+                                          Qt::KeepAspectRatio,
+                                          Qt::SmoothTransformation);
+    QByteArray pngData;
+    QBuffer buffer(&pngData);
+    if (!buffer.open(QIODevice::WriteOnly) || !thumbnail.save(&buffer, "PNG"))
+        return {};
+    return QString::fromLatin1(pngData.toBase64());
+}
+
+QString ClipboardBridge::saveHistoryImageBase64(const QString &base64) const
+{
+    if (base64.isEmpty())
+        return {};
+
+    const QString imageId = QString::fromLatin1(
+        QCryptographicHash::hash(base64.toLatin1(), QCryptographicHash::Sha256).toHex());
+    const QString path = QDir(historyImageDirPath()).filePath(imageId + QStringLiteral(".b64"));
+    if (QFile::exists(path))
+        return imageId;
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return {};
+    file.write(base64.toLatin1());
+    return imageId;
+}
+
+QString ClipboardBridge::loadHistoryImageBase64(const QString &imageId) const
+{
+    if (imageId.isEmpty())
+        return {};
+
+    QFile file(QDir(historyImageDirPath()).filePath(imageId + QStringLiteral(".b64")));
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return QString::fromLatin1(file.readAll());
 }
 
 QString ClipboardBridge::imageBase64() const

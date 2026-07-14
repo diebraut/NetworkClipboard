@@ -5,9 +5,12 @@
 #include <QClipboard>
 #include <QCryptographicHash>
 #include <QDebug>
+#include <QDir>
+#include <QFile>
 #include <QGuiApplication>
 #include <QImage>
 #include <QMimeData>
+#include <QStandardPaths>
 #include <QTextDocument>
 
 #ifdef Q_OS_ANDROID
@@ -83,6 +86,14 @@ QByteArray networkPngData(const QImage &sourceImage)
                              Qt::SmoothTransformation);
     }
     return {};
+}
+
+QString historyImageDirPath()
+{
+    const QString basePath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir dir(basePath);
+    dir.mkpath(QStringLiteral("history-images"));
+    return dir.filePath(QStringLiteral("history-images"));
 }
 
 #ifdef Q_OS_ANDROID
@@ -164,6 +175,111 @@ QString ClipboardBridge::imageFingerprintFromBase64(const QString &base64) const
     if (image.isNull())
         return {};
     return QString::fromLatin1(imageFingerprintBytes(image).toHex());
+}
+
+QString ClipboardBridge::thumbnailBase64FromBase64(const QString &base64, int maxSize) const
+{
+    const QImage image = QImage::fromData(QByteArray::fromBase64(base64.toLatin1()), "PNG");
+    if (image.isNull())
+        return {};
+
+    const int boundedMaxSize = qBound(24, maxSize, 1024);
+    const QImage thumbnail = image.scaled(boundedMaxSize,
+                                          boundedMaxSize,
+                                          Qt::KeepAspectRatio,
+                                          Qt::SmoothTransformation);
+    QByteArray pngData;
+    QBuffer buffer(&pngData);
+    if (!buffer.open(QIODevice::WriteOnly) || !thumbnail.save(&buffer, "PNG"))
+        return {};
+    return QString::fromLatin1(pngData.toBase64());
+}
+
+bool ClipboardBridge::imageHasMeaningfulContentBase64(const QString &base64) const
+{
+    const QImage image = QImage::fromData(QByteArray::fromBase64(base64.toLatin1()), "PNG");
+    if (image.isNull())
+        return false;
+
+    const QImage sample = image.scaled(32,
+                                       32,
+                                       Qt::KeepAspectRatio,
+                                       Qt::SmoothTransformation)
+                              .convertToFormat(QImage::Format_RGBA8888);
+    if (sample.isNull())
+        return false;
+
+    int visiblePixels = 0;
+    int minR = 255;
+    int minG = 255;
+    int minB = 255;
+    int maxR = 0;
+    int maxG = 0;
+    int maxB = 0;
+    qint64 luminanceSum = 0;
+    qint64 luminanceSquaredSum = 0;
+
+    for (int y = 0; y < sample.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(sample.constScanLine(y));
+        for (int x = 0; x < sample.width(); ++x) {
+            const QRgb pixel = line[x];
+            if (qAlpha(pixel) <= 8)
+                continue;
+
+            const int red = qRed(pixel);
+            const int green = qGreen(pixel);
+            const int blue = qBlue(pixel);
+            const int luminance = (red * 299 + green * 587 + blue * 114) / 1000;
+
+            minR = qMin(minR, red);
+            minG = qMin(minG, green);
+            minB = qMin(minB, blue);
+            maxR = qMax(maxR, red);
+            maxG = qMax(maxG, green);
+            maxB = qMax(maxB, blue);
+            luminanceSum += luminance;
+            luminanceSquaredSum += qint64(luminance) * luminance;
+            ++visiblePixels;
+        }
+    }
+
+    if (visiblePixels < qMax(1, sample.width() * sample.height() / 20))
+        return false;
+
+    const int colorRange = qMax(qMax(maxR - minR, maxG - minG), maxB - minB);
+    const qint64 varianceNumerator = luminanceSquaredSum * visiblePixels
+                                     - luminanceSum * luminanceSum;
+    const qint64 lowVarianceLimit = qint64(12) * 12 * visiblePixels * visiblePixels;
+    return !(varianceNumerator < lowVarianceLimit && colorRange < 80);
+}
+
+QString ClipboardBridge::saveHistoryImageBase64(const QString &base64) const
+{
+    if (base64.isEmpty())
+        return {};
+
+    const QString imageId = QString::fromLatin1(
+        QCryptographicHash::hash(base64.toLatin1(), QCryptographicHash::Sha256).toHex());
+    const QString path = QDir(historyImageDirPath()).filePath(imageId + QStringLiteral(".b64"));
+    if (QFile::exists(path))
+        return imageId;
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return {};
+    file.write(base64.toLatin1());
+    return imageId;
+}
+
+QString ClipboardBridge::loadHistoryImageBase64(const QString &imageId) const
+{
+    if (imageId.isEmpty())
+        return {};
+
+    QFile file(QDir(historyImageDirPath()).filePath(imageId + QStringLiteral(".b64")));
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return QString::fromLatin1(file.readAll());
 }
 
 QString ClipboardBridge::imageBase64() const
