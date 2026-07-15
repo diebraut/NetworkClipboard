@@ -12,6 +12,7 @@
 #include <QMimeData>
 #include <QStandardPaths>
 #include <QTextDocument>
+#include <QVector>
 
 #ifdef Q_OS_ANDROID
 #include <QJniObject>
@@ -59,6 +60,50 @@ QByteArray imageFingerprintBytes(const QImage &image)
             normalized.width() * 4));
     }
     return hash.result();
+}
+
+QString imageVisualFingerprint(const QImage &image)
+{
+    if (image.isNull())
+        return {};
+
+    const QImage sample = image.scaled(16,
+                                       16,
+                              Qt::IgnoreAspectRatio,
+                              Qt::SmoothTransformation)
+                              .convertToFormat(QImage::Format_ARGB32);
+    if (sample.isNull())
+        return {};
+
+    QVector<int> luminanceValues;
+    luminanceValues.reserve(sample.width() * sample.height());
+    int luminanceSum = 0;
+    for (int y = 0; y < sample.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(sample.constScanLine(y));
+        for (int x = 0; x < sample.width(); ++x) {
+            const QRgb pixel = line[x];
+            const int alpha = qAlpha(pixel);
+            const int red = (qRed(pixel) * alpha + 255 * (255 - alpha)) / 255;
+            const int green = (qGreen(pixel) * alpha + 255 * (255 - alpha)) / 255;
+            const int blue = (qBlue(pixel) * alpha + 255 * (255 - alpha)) / 255;
+            const int luminance = (red * 299 + green * 587 + blue * 114) / 1000;
+            luminanceValues.push_back(luminance);
+            luminanceSum += luminance;
+        }
+    }
+
+    const int average = luminanceValues.isEmpty() ? 0 : luminanceSum / luminanceValues.size();
+    QByteArray bits;
+    bits.reserve((luminanceValues.size() + 7) / 8);
+    for (int i = 0; i < luminanceValues.size(); i += 8) {
+        uchar byte = 0;
+        for (int bit = 0; bit < 8 && i + bit < luminanceValues.size(); ++bit) {
+            if (luminanceValues.at(i + bit) >= average)
+                byte |= uchar(1u << bit);
+        }
+        bits.append(char(byte));
+    }
+    return QString::fromLatin1(bits.toHex());
 }
 
 QByteArray networkPngData(const QImage &sourceImage)
@@ -175,6 +220,12 @@ QString ClipboardBridge::imageFingerprintFromBase64(const QString &base64) const
     if (image.isNull())
         return {};
     return QString::fromLatin1(imageFingerprintBytes(image).toHex());
+}
+
+QString ClipboardBridge::imageVisualFingerprintFromBase64(const QString &base64) const
+{
+    const QImage image = QImage::fromData(QByteArray::fromBase64(base64.toLatin1()), "PNG");
+    return imageVisualFingerprint(image);
 }
 
 QString ClipboardBridge::thumbnailBase64FromBase64(const QString &base64, int maxSize) const

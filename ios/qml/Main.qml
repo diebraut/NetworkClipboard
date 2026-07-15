@@ -196,7 +196,22 @@ ApplicationWindow {
         if (entry.type === "image") {
             const imageData = imageDataForHistoryEntry(entry)
             if (imageData.length > 0) {
+                const visualImageFingerprint = localClipboard.imageVisualFingerprintFromBase64(imageData)
+                if (visualImageFingerprint.length > 0)
+                    return historyKey("image", visualImageFingerprint)
                 const fingerprint = localClipboard.imageFingerprintFromBase64(imageData)
+                if (fingerprint.length > 0)
+                    return historyKey("image", fingerprint)
+            }
+
+            const visualData = entry.thumbnail && entry.thumbnail.length > 0
+                ? entry.thumbnail
+                : (entry.preview || "")
+            if (visualData.length > 0) {
+                const visualFingerprint = localClipboard.imageVisualFingerprintFromBase64(visualData)
+                if (visualFingerprint.length > 0)
+                    return historyKey("image", visualFingerprint)
+                const fingerprint = localClipboard.imageFingerprintFromBase64(visualData)
                 if (fingerprint.length > 0)
                     return historyKey("image", fingerprint)
             }
@@ -213,6 +228,70 @@ ApplicationWindow {
         }
 
         return ""
+    }
+
+    function historyImageFingerprintFromKey(key) {
+        if (typeof key !== "string" || key.indexOf("image:") !== 0)
+            return ""
+        const fingerprint = key.slice(6).toLowerCase()
+        if (fingerprint.length !== 64)
+            return ""
+        for (let i = 0; i < fingerprint.length; ++i) {
+            const code = fingerprint.charCodeAt(i)
+            const isHex = (code >= 48 && code <= 57)
+                || (code >= 97 && code <= 102)
+            if (!isHex)
+                return ""
+        }
+        return fingerprint
+    }
+
+    function hexBitCount(value) {
+        switch (value) {
+        case 0: return 0
+        case 1:
+        case 2:
+        case 4:
+        case 8:
+            return 1
+        case 3:
+        case 5:
+        case 6:
+        case 9:
+        case 10:
+        case 12:
+            return 2
+        case 7:
+        case 11:
+        case 13:
+        case 14:
+            return 3
+        case 15:
+            return 4
+        default:
+            return 64
+        }
+    }
+
+    function imageFingerprintDistance(left, right) {
+        if (left.length !== 64 || right.length !== 64)
+            return 64
+
+        let distance = 0
+        for (let i = 0; i < left.length; ++i)
+            distance += hexBitCount(parseInt(left.charAt(i), 16) ^ parseInt(right.charAt(i), 16))
+        return distance
+    }
+
+    function sameHistoryDedupeKey(left, right) {
+        if (left === right)
+            return true
+
+        const leftImage = historyImageFingerprintFromKey(left)
+        const rightImage = historyImageFingerprintFromKey(right)
+        return leftImage.length > 0
+            && rightImage.length > 0
+            && imageFingerprintDistance(leftImage, rightImage) <= 8
     }
 
     function imageDataForHistoryEntry(entry) {
@@ -373,6 +452,7 @@ ApplicationWindow {
     function cleanClipboardHistoryModel() {
         const entries = []
         const seen = ({})
+        const seenImageKeys = []
         let changed = false
 
         for (let i = 0; i < clipboardHistoryModel.count; ++i) {
@@ -383,12 +463,23 @@ ApplicationWindow {
             }
 
             const dedupeKey = historyDedupeKey(entry)
-            if (dedupeKey.length === 0 || seen[dedupeKey]) {
+            let duplicate = dedupeKey.length === 0 || seen[dedupeKey]
+            if (!duplicate && entry.type === "image") {
+                for (let imageIndex = 0; imageIndex < seenImageKeys.length; ++imageIndex) {
+                    if (sameHistoryDedupeKey(dedupeKey, seenImageKeys[imageIndex])) {
+                        duplicate = true
+                        break
+                    }
+                }
+            }
+            if (duplicate) {
                 changed = true
                 continue
             }
 
             seen[dedupeKey] = true
+            if (entry.type === "image")
+                seenImageKeys.push(dedupeKey)
             const snapshot = historyEntrySnapshot(entry)
             if (snapshot.type === "text" || snapshot.type === "url")
                 snapshot.content = normalizedHistoryContent(snapshot.type, snapshot.content)
@@ -513,19 +604,32 @@ ApplicationWindow {
         const key = type === "image"
             ? historyKey(type, imageFingerprint.length > 0 ? imageFingerprint : imageId)
             : historyKey(type, normalizedContent)
+        const incomingDedupeKey = type === "image"
+            ? historyDedupeKey({
+                "type": type,
+                "content": storedContent,
+                "key": key,
+                "imageId": imageId,
+                "thumbnail": thumbnail,
+                "preview": ""
+            })
+            : key
         for (let i = 0; i < clipboardHistoryModel.count; ++i) {
             const existing = clipboardHistoryModel.get(i)
+            const existingDedupeKey = historyDedupeKey(existing)
             const sameImage = type === "image"
                 && existing.type === "image"
-                && (existing.imageId === imageId || historyDedupeKey(existing) === key)
-            if (existing.key === key || sameImage) {
+                && (existing.imageId === imageId
+                    || existingDedupeKey === key
+                    || sameHistoryDedupeKey(existingDedupeKey, incomingDedupeKey))
+            if (existing.key === key || sameHistoryDedupeKey(existingDedupeKey, incomingDedupeKey) || sameImage) {
                 if (type === "image") {
                     if ((!existing.imageId || existing.imageId.length === 0) && imageId.length > 0)
                         clipboardHistoryModel.setProperty(i, "imageId", imageId)
                     if (!existing.thumbnail || existing.thumbnail.length === 0)
                         clipboardHistoryModel.setProperty(i, "thumbnail", thumbnail)
                 }
-                clipboardHistoryModel.move(i, 0, 1)
+                promoteHistoryEntry(i)
                 cleanClipboardHistoryModel()
                 saveClipboardHistory()
                 return 0

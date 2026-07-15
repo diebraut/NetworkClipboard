@@ -16,6 +16,7 @@ public:
     Q_INVOKABLE bool hasImage() const;
     Q_INVOKABLE QString imageFingerprint() const;
     Q_INVOKABLE QString imageFingerprintFromBase64(const QString &base64) const;
+    Q_INVOKABLE QString imageVisualFingerprintFromBase64(const QString &base64) const;
     Q_INVOKABLE QString thumbnailBase64FromBase64(const QString &base64, int maxSize = 96) const;
     Q_INVOKABLE bool imageHasMeaningfulContentBase64(const QString &base64) const;
     Q_INVOKABLE QString saveHistoryImageBase64(const QString &base64) const;
