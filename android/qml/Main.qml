@@ -244,15 +244,73 @@ ApplicationWindow {
         return type + ":" + content
     }
 
+    function normalizedHistoryContent(type, content) {
+        if (typeof content !== "string")
+            return ""
+
+        if (type === "text" || type === "url")
+            return content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
+
+        return content.trim()
+    }
+
+    function historyDedupeKey(entry) {
+        if (!entry || typeof entry.type !== "string")
+            return ""
+
+        if (entry.type === "image") {
+            const imageData = imageDataForHistoryEntry(entry)
+            if (imageData.length > 0) {
+                const fingerprint = localClipboard.imageFingerprintFromBase64(imageData)
+                if (fingerprint.length > 0)
+                    return historyKey("image", fingerprint)
+            }
+            if (entry.imageId && entry.imageId.length > 0)
+                return historyKey("image", entry.imageId)
+            if (entry.key && entry.key.length > 0)
+                return entry.key
+            return ""
+        }
+
+        if (entry.type === "text" || entry.type === "url") {
+            const content = normalizedHistoryContent(entry.type, entry.content || "")
+            return content.length > 0 ? historyKey(entry.type, content) : ""
+        }
+
+        return ""
+    }
+
+    function imageDataForHistoryEntry(entry) {
+        if (!entry || entry.type !== "image")
+            return ""
+        if (entry.content && entry.content.length > 0)
+            return entry.content
+        if (entry.imageId && entry.imageId.length > 0) {
+            const content = localClipboard.loadHistoryImageBase64(entry.imageId)
+            if (content.length > 0)
+                return content
+        }
+        if (entry.preview && entry.preview.length > 0)
+            return entry.preview
+        if (entry.thumbnail && entry.thumbnail.length > 0)
+            return entry.thumbnail
+        return ""
+    }
+
     function saveClipboardHistory() {
         if (loadingClipboardHistory)
             return
 
         const entries = []
+        const seen = ({})
         for (let i = 0; i < clipboardHistoryModel.count && i < 15; ++i) {
             const entry = clipboardHistoryModel.get(i)
             if (!isValidHistoryEntry(entry))
                 continue
+            const dedupeKey = historyDedupeKey(entry)
+            if (dedupeKey.length === 0 || seen[dedupeKey])
+                continue
+            seen[dedupeKey] = true
             entries.push({
                 "type": entry.type,
                 "content": entry.content,
@@ -316,8 +374,51 @@ ApplicationWindow {
                 && localClipboard.imageHasMeaningfulContentBase64(imageData)
         }
         if (entry.type === "text" || entry.type === "url")
-            return entry.content && entry.content.trim().length > 0
+            return normalizedHistoryContent(entry.type, entry.content || "").length > 0
         return false
+    }
+
+    function cleanClipboardHistoryModel() {
+        const entries = []
+        const seen = ({})
+        let changed = false
+
+        for (let i = 0; i < clipboardHistoryModel.count; ++i) {
+            const entry = clipboardHistoryModel.get(i)
+            if (!isValidHistoryEntry(entry)) {
+                changed = true
+                continue
+            }
+
+            const dedupeKey = historyDedupeKey(entry)
+            if (dedupeKey.length === 0 || seen[dedupeKey]) {
+                changed = true
+                continue
+            }
+
+            seen[dedupeKey] = true
+            const snapshot = historyEntrySnapshot(entry)
+            if (snapshot.type === "text" || snapshot.type === "url")
+                snapshot.content = normalizedHistoryContent(snapshot.type, snapshot.content)
+            if (snapshot.key !== dedupeKey)
+                changed = true
+            snapshot.key = dedupeKey
+            entries.push(snapshot)
+        }
+
+        while (entries.length > 15) {
+            entries.pop()
+            changed = true
+        }
+
+        if (!changed)
+            return
+
+        const selectedKey = currentPreviewHistoryKey
+        clipboardHistoryModel.clear()
+        for (let j = 0; j < entries.length; ++j)
+            clipboardHistoryModel.append(entries[j])
+        currentPreviewHistoryIndex = selectedKey.length > 0 ? findHistoryIndex(selectedKey) : -1
     }
 
     function showRestoredHistoryEntry(index) {
@@ -354,11 +455,13 @@ ApplicationWindow {
         try {
             const entries = JSON.parse(clipboardHistorySettings.entriesJson)
             if (Array.isArray(entries)) {
+                const seen = ({})
                 for (let i = 0; i < entries.length && i < 15; ++i) {
                     const entry = entries[i]
                     if (!entry || typeof entry.type !== "string")
                         continue
-                    const entryContent = typeof entry.content === "string" ? entry.content : ""
+                    const entryContent = normalizedHistoryContent(entry.type,
+                        typeof entry.content === "string" ? entry.content : "")
 
                     const key = typeof entry.key === "string" && entry.key.length > 0
                         ? entry.key
@@ -378,8 +481,11 @@ ApplicationWindow {
                         "preview": "",
                         "createdAt": typeof entry.createdAt === "string" ? entry.createdAt : ""
                     }
-                    if (isValidHistoryEntry(restoredEntry))
+                    const dedupeKey = historyDedupeKey(restoredEntry)
+                    if (isValidHistoryEntry(restoredEntry) && dedupeKey.length > 0 && !seen[dedupeKey]) {
+                        seen[dedupeKey] = true
                         clipboardHistoryModel.append(restoredEntry)
+                    }
                 }
             }
         } catch (error) {
@@ -387,6 +493,7 @@ ApplicationWindow {
         }
 
         loadingClipboardHistory = false
+        cleanClipboardHistoryModel()
         if (clipboardHistoryModel.count > 0) {
             showRestoredHistoryEntry(0)
             saveClipboardHistory()
@@ -394,30 +501,39 @@ ApplicationWindow {
     }
 
     function addHistoryEntry(type, content) {
-        if (content.length === 0)
+        const normalizedContent = normalizedHistoryContent(type, content)
+        if (normalizedContent.length === 0)
             return -1
 
-        const imageId = type === "image" ? localClipboard.saveHistoryImageBase64(content) : ""
+        const imageContent = type === "image" ? normalizedContent : ""
+        const imageId = type === "image" ? localClipboard.saveHistoryImageBase64(imageContent) : ""
         if (type === "image" && imageId.length === 0)
             return -1
-        const thumbnail = type === "image" ? historyThumbnail(type, content) : ""
+        const thumbnail = type === "image" ? historyThumbnail(type, imageContent) : ""
         if (type === "image" && thumbnail.length === 0)
             return -1
         if (type === "image" && !localClipboard.imageHasMeaningfulContentBase64(thumbnail))
             return -1
 
-        const storedContent = type === "image" ? "" : content
-        const key = type === "image" ? historyKey(type, imageId) : historyKey(type, content)
+        const storedContent = type === "image" ? "" : normalizedContent
+        const imageFingerprint = type === "image" ? localClipboard.imageFingerprintFromBase64(imageContent) : ""
+        const key = type === "image"
+            ? historyKey(type, imageFingerprint.length > 0 ? imageFingerprint : imageId)
+            : historyKey(type, normalizedContent)
         for (let i = 0; i < clipboardHistoryModel.count; ++i) {
-            if (clipboardHistoryModel.get(i).key === key) {
+            const existing = clipboardHistoryModel.get(i)
+            const sameImage = type === "image"
+                && existing.type === "image"
+                && (existing.imageId === imageId || historyDedupeKey(existing) === key)
+            if (existing.key === key || sameImage) {
                 if (type === "image") {
-                    const existing = clipboardHistoryModel.get(i)
                     if ((!existing.imageId || existing.imageId.length === 0) && imageId.length > 0)
                         clipboardHistoryModel.setProperty(i, "imageId", imageId)
                     if (!existing.thumbnail || existing.thumbnail.length === 0)
                         clipboardHistoryModel.setProperty(i, "thumbnail", thumbnail)
                 }
                 clipboardHistoryModel.move(i, 0, 1)
+                cleanClipboardHistoryModel()
                 saveClipboardHistory()
                 return 0
             }
@@ -436,6 +552,7 @@ ApplicationWindow {
         while (clipboardHistoryModel.count > 15)
             clipboardHistoryModel.remove(clipboardHistoryModel.count - 1)
 
+        cleanClipboardHistoryModel()
         saveClipboardHistory()
         return 0
     }
@@ -495,8 +612,11 @@ ApplicationWindow {
         rawPreviewText = text
         rawPreviewImageBase64 = ""
         currentPreviewFromLocalClipboard = true
-        currentPreviewHistoryKey = historyKey("text", text)
         currentPreviewHistoryIndex = networkClipboard.serverActive ? addHistoryEntry("text", text) : -1
+        const normalizedText = normalizedHistoryContent("text", text)
+        currentPreviewHistoryKey = currentPreviewHistoryIndex >= 0
+            ? clipboardHistoryModel.get(currentPreviewHistoryIndex).key
+            : (normalizedText.length > 0 ? historyKey("text", normalizedText) : "")
     }
 
     function showLocalPreviewImage(base64, fingerprint) {
@@ -513,8 +633,11 @@ ApplicationWindow {
         rawPreviewText = text
         rawPreviewImageBase64 = ""
         currentPreviewFromLocalClipboard = false
-        currentPreviewHistoryKey = historyKey("text", text)
         currentPreviewHistoryIndex = addHistoryEntry("text", text)
+        const normalizedText = normalizedHistoryContent("text", text)
+        currentPreviewHistoryKey = currentPreviewHistoryIndex >= 0
+            ? clipboardHistoryModel.get(currentPreviewHistoryIndex).key
+            : (normalizedText.length > 0 ? historyKey("text", normalizedText) : "")
     }
 
     function showNetworkPreviewImage(base64) {
