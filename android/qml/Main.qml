@@ -564,9 +564,40 @@ ApplicationWindow {
         return currentPreviewHistoryIndex
     }
 
+    function historyEntrySnapshot(entry) {
+        return {
+            "type": entry.type,
+            "content": entry.content || "",
+            "key": entry.key,
+            "imageId": entry.imageId || "",
+            "thumbnail": entry.thumbnail || "",
+            "preview": entry.preview || "",
+            "createdAt": entry.createdAt || Qt.formatTime(new Date(), "HH:mm")
+        }
+    }
+
+    function promoteHistoryEntry(index) {
+        const entries = []
+        for (let i = 0; i < clipboardHistoryModel.count; ++i)
+            entries.push(historyEntrySnapshot(clipboardHistoryModel.get(i)))
+
+        const promotedEntry = entries[index]
+        if (index > 0) {
+            entries.splice(index, 1)
+            entries.unshift(promotedEntry)
+            clipboardHistoryModel.clear()
+            for (let j = 0; j < entries.length; ++j)
+                clipboardHistoryModel.append(entries[j])
+        }
+
+        return promotedEntry
+    }
+
     function positionHistoryAtStart() {
         Qt.callLater(function() {
+            historyListView.contentX = 0
             historyListView.positionViewAtBeginning()
+            historyListView.positionViewAtIndex(0, ListView.Beginning)
         })
     }
 
@@ -574,17 +605,15 @@ ApplicationWindow {
         if (index < 0 || index >= clipboardHistoryModel.count)
             return
 
-        const entry = clipboardHistoryModel.get(index)
-        if (index > 0)
-            clipboardHistoryModel.move(index, 0, 1)
+        const promotedEntry = promoteHistoryEntry(index)
         currentPreviewFromLocalClipboard = true
-        currentPreviewHistoryKey = entry.key
+        currentPreviewHistoryKey = promotedEntry.key
         currentPreviewHistoryIndex = 0
         saveClipboardHistory()
         positionHistoryAtStart()
 
-        if (entry.type === "image") {
-            const content = entry.content.length > 0 ? entry.content : localClipboard.loadHistoryImageBase64(entry.imageId || "")
+        if (promotedEntry.type === "image") {
+            const content = promotedEntry.content.length > 0 ? promotedEntry.content : localClipboard.loadHistoryImageBase64(promotedEntry.imageId)
             if (content.length === 0)
                 return
             const fingerprint = localClipboard.imageFingerprintFromBase64(content)
@@ -609,7 +638,7 @@ ApplicationWindow {
             return
         }
 
-        const text = entry.content
+        const text = promotedEntry.content
         localPublishGuardUntil = networkClipboard.serverActive ? Date.now() + 4000 : 0
         recentLocalImageFingerprint = ""
         observedLocalImageFingerprint = ""

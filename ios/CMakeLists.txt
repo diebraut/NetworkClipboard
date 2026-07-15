@@ -5,7 +5,7 @@ project(NetworkClipboardIOS VERSION 0.1 LANGUAGES CXX OBJCXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Network)
+find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Qml QmlCore Quick QuickControls2 Network)
 
 qt_standard_project_setup()
 
@@ -33,7 +33,7 @@ qt_add_qml_module(NetworkClipboardIOS
 )
 
 target_link_libraries(NetworkClipboardIOS
-    PRIVATE Qt6::Core Qt6::Gui Qt6::Quick Qt6::QuickControls2 Qt6::Network
+    PRIVATE Qt6::Core Qt6::Gui Qt6::Qml Qt6::QmlCore Qt6::Quick Qt6::QuickControls2 Qt6::Network
 )
 
 if(IOS)
