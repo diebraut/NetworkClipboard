@@ -481,6 +481,12 @@ void TrayController::pollLatestFromServer()
     const qint64 requestStartedAt = QDateTime::currentMSecsSinceEpoch();
     QNetworkReply *reply = m_network.get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, requestStartedAt]() {
+        if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 404) {
+            reply->deleteLater();
+            rehydrateServerFromCachedEntry();
+            return;
+        }
+
         if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 304) {
             reply->deleteLater();
             return;
@@ -552,6 +558,8 @@ void TrayController::fetchClipboardHistory()
         m_networkHistory = entries;
         if (!m_networkHistory.isEmpty())
             m_latestNetworkEntry = m_networkHistory.first();
+        else
+            rehydrateServerFromCachedEntry();
         if (m_contentWindow && m_contentWindow->isVisible())
             updateContentWindow();
 
@@ -920,8 +928,10 @@ void TrayController::startServerServiceIfNeeded()
     QTimer::singleShot(2500, this, &TrayController::updateServiceStatus);
     QTimer::singleShot(5000, this, [this]() {
         updateServiceStatus();
-        if (m_serviceRunning)
-            scheduleCurrentClipboardPublish(true);
+        if (m_serviceRunning) {
+            pollLatestFromServer();
+            fetchClipboardHistory();
+        }
     });
 }
 
@@ -954,8 +964,10 @@ void TrayController::updateServiceStatus()
                                  ? QStringLiteral("Stop Server Service")
                                  : QStringLiteral("Start Server Service"));
 
-    if (serviceStarted)
-        scheduleCurrentClipboardPublish(true);
+    if (serviceStarted) {
+        QTimer::singleShot(250, this, &TrayController::pollLatestFromServer);
+        QTimer::singleShot(500, this, &TrayController::fetchClipboardHistory);
+    }
 }
 
 void TrayController::setAutoSendEnabled(bool enabled)
@@ -1070,6 +1082,18 @@ void TrayController::finishSendEntryToServer()
     QTimer::singleShot(0, this, [this, pendingEntry, pendingShowSuccessMessage]() {
         sendEntryToServer(pendingEntry, pendingShowSuccessMessage);
     });
+}
+
+void TrayController::rehydrateServerFromCachedEntry()
+{
+    if (m_sendInFlight || m_token.isEmpty() || !m_serverUrl.isValid())
+        return;
+
+    if (!m_latestNetworkEntry || m_latestNetworkEntry->content.isEmpty())
+        return;
+
+    m_sendInFlight = true;
+    postEntryToServer(*m_latestNetworkEntry, false);
 }
 
 void TrayController::applyNetworkEntryToClipboard(const ClipboardEntry &entry, bool showMessage, bool allowOwnEntry)
