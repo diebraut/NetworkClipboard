@@ -2,6 +2,7 @@
 
 #include <QAbstractSocket>
 #include <QByteArray>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDebug>
 #include <QHostInfo>
@@ -77,6 +78,17 @@ QString endpointServerUrl(QUrl url)
     while (value.endsWith(QLatin1Char('/')))
         value.chop(1);
     return value;
+}
+
+QString shortHash(const QByteArray &data)
+{
+    return QString::fromLatin1(
+        QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex().left(12));
+}
+
+QString shortHash(const QString &text)
+{
+    return shortHash(text.toUtf8());
 }
 
 QString discoveredServerUrl(const QJsonObject &object, const QString &fallbackUrl)
@@ -174,7 +186,7 @@ void NetworkClipboardClient::sendText(const QString &text, const QString &device
 {
     const QString content = text.trimmed();
     if (content.isEmpty()) {
-        setStatus(QStringLiteral("Clipboard is empty."));
+        setStatus(QStringLiteral("Lokale Zwischenablage ist leer."));
         return;
     }
 
@@ -280,26 +292,45 @@ void NetworkClipboardClient::forcePollLatest()
 
 void NetworkClipboardClient::pollLatest(bool force)
 {
-    if (m_latestRequestInFlight)
+    if (m_latestRequestInFlight) {
+        if (force)
+            m_forceLatestAfterInFlight = true;
+        qInfo().noquote() << "[NC latest] deferred force read because request is already in flight";
         return;
+    }
+    if (force)
+        m_forceLatestAfterInFlight = false;
 
     const QString serverUrl = normalizedServerUrl();
     if (serverUrl.isEmpty()) {
         setStatus(QStringLiteral("Server URL fehlt."));
+        if (force)
+            emit latestReadFailed();
         return;
     }
 
     if (!m_serverActive) {
         setStatus(QStringLiteral("Kein aktiver Server."));
+        if (force)
+            emit latestReadFailed();
         return;
     }
 
     if (m_token.trimmed().isEmpty()) {
         setStatus(QStringLiteral("API token fehlt."));
+        if (force)
+            emit latestReadFailed();
         return;
     }
 
     m_latestRequestInFlight = true;
+    qInfo().noquote()
+        << "[NC latest] request"
+        << (force ? "force" : "poll")
+        << "url=" << serverUrl
+        << "active=" << m_serverActive
+        << "tokenLen=" << m_token.trimmed().size()
+        << "etag=" << (m_latestEntryId.isEmpty() ? QStringLiteral("<empty>") : m_latestEntryId);
 
     QNetworkRequest latestRequest = request(QStringLiteral("/api/clipboard/latest"));
     latestRequest.setRawHeader("Accept", "application/vnd.networkclipboard.meta+json, application/json");
@@ -313,19 +344,53 @@ void NetworkClipboardClient::pollLatest(bool force)
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, force]() {
         m_latestRequestInFlight = false;
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const auto retryDeferredForceRead = [this]() {
+            if (!m_forceLatestAfterInFlight)
+                return;
+            m_forceLatestAfterInFlight = false;
+            QTimer::singleShot(0, this, [this]() { pollLatest(true); });
+        };
 
-        if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 304) {
+        if (statusCode == 304) {
+            qInfo().noquote() << "[NC latest] response 304 unchanged";
+            retryDeferredForceRead();
+            reply->deleteLater();
+            return;
+        }
+        if (statusCode == 404) {
+            qWarning().noquote() << "[NC latest] response 404 empty latest";
+            m_latestEntryId.clear();
+            emit latestReadEmpty();
+            retryDeferredForceRead();
             reply->deleteLater();
             return;
         }
         if (reply->error() != QNetworkReply::NoError) {
             setStatus(replyErrorMessage(reply));
+            qWarning().noquote()
+                << "[NC latest] error"
+                << "status=" << statusCode
+                << "message=" << m_status
+                << "url=" << reply->url().toString();
+            if (force)
+                emit latestReadFailed();
+            retryDeferredForceRead();
             reply->deleteLater();
             return;
         }
 
-        const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
+        const QByteArray payload = reply->readAll();
+        const QJsonObject object = QJsonDocument::fromJson(payload).object();
+        qInfo().noquote()
+            << "[NC latest] response"
+            << "status=" << statusCode
+            << "bytes=" << payload.size()
+            << "hash=" << shortHash(payload)
+            << "id=" << object.value(QStringLiteral("id")).toString()
+            << "type=" << object.value(QStringLiteral("type")).toString(QStringLiteral("text"));
         handleClipboardEntry(object, force);
+        retryDeferredForceRead();
         reply->deleteLater();
     });
 }
@@ -345,10 +410,16 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object, boo
 
         if (mimeType != QStringLiteral("image/png")) {
             setStatus(QStringLiteral("Server lieferte ein ungueltiges Bild."));
+            if (force)
+                emit latestReadFailed();
             return;
         }
 
         if (content.isEmpty() && !contentUrl.isEmpty()) {
+            qInfo().noquote()
+                << "[NC latest] image metadata"
+                << "id=" << id
+                << "contentUrl=" << contentUrl;
             if (!id.isEmpty() && id == m_pendingImageEntryId)
                 return;
             m_pendingImageEntryId = id;
@@ -368,11 +439,18 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object, boo
                 if (reply->isRunning())
                     reply->abort();
             });
-            connect(reply, &QNetworkReply::finished, this, [this, reply, id]() {
+            connect(reply, &QNetworkReply::finished, this, [this, reply, id, force]() {
                 if (m_pendingImageEntryId == id)
                     m_pendingImageEntryId.clear();
                 if (reply->error() != QNetworkReply::NoError) {
                     setStatus(replyErrorMessage(reply));
+                    qWarning().noquote()
+                        << "[NC latest] image fetch error"
+                        << "id=" << id
+                        << "message=" << m_status
+                        << "url=" << reply->url().toString();
+                    if (force)
+                        emit latestReadFailed();
                     reply->deleteLater();
                     return;
                 }
@@ -383,6 +461,13 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object, boo
                     || pngData.size() > MaxImageBytes
                     || !pngData.startsWith(QByteArray(PngSignature, 8))) {
                     setStatus(QStringLiteral("Server lieferte ein ungueltiges Bild."));
+                    qWarning().noquote()
+                        << "[NC latest] invalid fetched image"
+                        << "id=" << id
+                        << "bytes=" << pngData.size()
+                        << "hash=" << shortHash(pngData);
+                    if (force)
+                        emit latestReadFailed();
                     reply->deleteLater();
                     return;
                 }
@@ -390,6 +475,11 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object, boo
                 if (!id.isEmpty())
                     m_latestEntryId = id;
                 setStatus(QStringLiteral("Bild empfangen: %1 KB.").arg((pngData.size() + 1023) / 1024));
+                qInfo().noquote()
+                    << "[NC latest] emit image"
+                    << "id=" << id
+                    << "bytes=" << pngData.size()
+                    << "hash=" << shortHash(pngData);
                 emit latestImageReceived(QString::fromLatin1(pngData.toBase64()));
                 reply->deleteLater();
             });
@@ -402,6 +492,8 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object, boo
             || pngData.size() > MaxImageBytes
             || !pngData.startsWith(QByteArray(PngSignature, 8))) {
             setStatus(QStringLiteral("Server lieferte ein ungueltiges Bild."));
+            if (force)
+                emit latestReadFailed();
             return;
         }
 
@@ -411,13 +503,24 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object, boo
             if (m_pendingImageEntryId == id)
                 m_pendingImageEntryId.clear();
         }
+        qInfo().noquote()
+            << "[NC latest] emit inline image"
+            << "id=" << id
+            << "bytes=" << pngData.size()
+            << "hash=" << shortHash(pngData);
         emit latestImageReceived(content);
         return;
     }
 
     if (!id.isEmpty())
         m_latestEntryId = id;
-    emit latestReceived(object.value(QStringLiteral("content")).toString());
+    const QString content = object.value(QStringLiteral("content")).toString();
+    qInfo().noquote()
+        << "[NC latest] emit text"
+        << "id=" << id
+        << "chars=" << content.size()
+        << "hash=" << shortHash(content);
+    emit latestReceived(content);
 }
 
 void NetworkClipboardClient::discoverServer()
@@ -1198,7 +1301,6 @@ void NetworkClipboardClient::finishKnownServerCheck()
 
     const int targetIndex = mainServerIndex >= 0 ? mainServerIndex : firstActiveIndex;
     if (targetIndex < 0 && m_knownServerMisses < 3) {
-        setServerActive(false);
         setStatus(QStringLiteral("Prüfe bekannte Server..."));
         if (m_knownServerListChanged) {
             emit serversChanged();
@@ -1245,6 +1347,13 @@ void NetworkClipboardClient::activateServer(int index)
         return;
 
     const QVariantMap server = m_servers.at(index).toMap();
+    qInfo().noquote()
+        << "[NC server] activate"
+        << "index=" << index
+        << "name=" << server.value(QStringLiteral("name")).toString()
+        << "url=" << server.value(QStringLiteral("url")).toString()
+        << "main=" << server.value(QStringLiteral("main")).toBool()
+        << "tokenLen=" << server.value(QStringLiteral("token")).toString().size();
     if (m_selectedServerIndex != index) {
         m_selectedServerIndex = index;
         emit selectedServerIndexChanged();
@@ -1350,6 +1459,12 @@ void NetworkClipboardClient::setServerActive(bool active)
         return;
 
     m_serverActive = active;
+    qInfo().noquote()
+        << "[NC server] active changed"
+        << active
+        << "url=" << m_serverUrl
+        << "name=" << m_serverName
+        << "tokenLen=" << m_token.size();
     emit serverActiveChanged();
 }
 

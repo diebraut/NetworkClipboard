@@ -74,6 +74,8 @@ signals:
     void statusChanged();
     void latestReceived(const QString &text);
     void latestImageReceived(const QString &base64Png);
+    void latestReadEmpty();
+    void latestReadFailed();
     void imageSent(const QString &fingerprint);
     void imageSendFailed(const QString &fingerprint);
 
@@ -116,6 +118,7 @@ private:
     bool m_serverCheckInFlight = false;
     bool m_knownServerCheckInFlight = false;
     bool m_latestRequestInFlight = false;
+    bool m_forceLatestAfterInFlight = false;
     bool m_serverActive = false;
     bool m_manualServerSelection = false;
     bool m_discoveryInProgress = false;

@@ -33,11 +33,33 @@ ApplicationWindow {
     property int currentPreviewHistoryIndex: -1
     property bool loadingClipboardHistory: false
     property bool previewImageLoading: false
+    property bool initialServerReadPending: true
+    property int initialServerReadRetries: 0
     property double localClipboardSyncPausedUntil: 0
+    property bool serverContentUnavailable: false
     readonly property bool compactLayout: width < 520
+    readonly property bool showingServerUnavailablePreview: serverContentUnavailable
+        && !currentPreviewFromLocalClipboard
+        && currentPreviewHistoryIndex <= 0
+    readonly property bool showingInitialServerReadPreview: initialServerReadPending
+        && !serverContentUnavailable
+        && !currentPreviewFromLocalClipboard
+        && currentPreviewHistoryIndex < 0
+    readonly property string serverUnavailableKey: "server-unavailable"
+    property string serverUnavailableText: "Inhalt Server nicht erreichbar"
 
     function deviceName() {
         return Qt.platform.os === "ios" ? "iPhone" : "Android"
+    }
+
+    function debugPreviewText(text) {
+        const safeText = typeof text === "string" ? text : ""
+        return "len=" + safeText.length + " head=\""
+            + safeText.slice(0, 40).replace(/\n/g, "\\n") + "\""
+    }
+
+    function debugLog(event, details) {
+        console.log("[NC QML] " + event + (details ? " " + details : ""))
     }
 
     function syncClipboardToPreview() {
@@ -46,7 +68,12 @@ ApplicationWindow {
             return
         }
 
-        if (isBrowsingHistoryEntry()) {
+        if (networkClipboard.serverActive && isBrowsingHistoryEntry()) {
+            clipboardSyncRetries = 0
+            return
+        }
+
+        if (initialServerReadPending || (networkClipboard.serverActive && waitingForServerText)) {
             clipboardSyncRetries = 0
             return
         }
@@ -78,6 +105,10 @@ ApplicationWindow {
                 observedLocalImageFingerprint = fingerprint
                 observedLocalClipboardText = ""
                 lastAutoSentText = ""
+                debugLog("local image detected",
+                    "fingerprint=" + fingerprint
+                    + " active=" + networkClipboard.serverActive
+                    + " initialPending=" + initialServerReadPending)
                 showLocalPreviewImage(base64, fingerprint)
             }
 
@@ -94,9 +125,6 @@ ApplicationWindow {
             return
         }
 
-        if (networkClipboard.serverActive && waitingForServerText)
-            return
-
         const text = localClipboard.text()
         if (text.trim().length === 0)
             return
@@ -112,6 +140,10 @@ ApplicationWindow {
         observedLocalImageFingerprint = ""
         lastAutoSentImageFingerprint = ""
         recentNetworkImageFingerprint = ""
+        debugLog("local text detected",
+            debugPreviewText(text)
+            + " active=" + networkClipboard.serverActive
+            + " initialPending=" + initialServerReadPending)
         showLocalPreviewText(text)
         pendingPasteboardImageBase64 = ""
         pendingPasteboardImageFingerprint = ""
@@ -130,7 +162,7 @@ ApplicationWindow {
         if (Date.now() < localClipboardSyncPausedUntil)
             return
 
-        if (isBrowsingHistoryEntry())
+        if (networkClipboard.serverActive && isBrowsingHistoryEntry())
             return
 
         clipboardSyncRetries = Qt.platform.os === "ios" ? 20 : 12
@@ -159,7 +191,7 @@ ApplicationWindow {
     }
 
     function isBrowsingHistoryEntry() {
-        return currentPreviewHistoryIndex > 0
+        return currentPreviewHistoryIndex > 0 && !currentPreviewFromLocalClipboard
     }
 
     function findHistoryIndex(key) {
@@ -172,6 +204,18 @@ ApplicationWindow {
         }
 
         return -1
+    }
+
+    function findHistoryIndexPreferIndex(key, preferredIndex) {
+        if (key.length === 0)
+            return -1
+
+        if (preferredIndex >= 0
+                && preferredIndex < clipboardHistoryModel.count
+                && clipboardHistoryModel.get(preferredIndex).key === key)
+            return preferredIndex
+
+        return findHistoryIndex(key)
     }
 
     function showPreviewImage(base64) {
@@ -195,8 +239,102 @@ ApplicationWindow {
         selectedImageLoadTimer.restart()
     }
 
+    function clearPreviewImageDisplay() {
+        rawPreviewImageBase64 = ""
+        pendingPreviewImageBase64 = ""
+        previewImageLoading = false
+        rawPreviewImageSource = ""
+        imagePreview.triedFileFallback = false
+    }
+
     function historyKey(type, content) {
         return type + ":" + content
+    }
+
+    function isServerUnavailableEntry(entry) {
+        return entry && entry.type === "server-unavailable"
+    }
+
+    function serverUnavailableEntry() {
+        return {
+            "type": "server-unavailable",
+            "content": serverUnavailableText,
+            "key": serverUnavailableKey,
+            "imageId": "",
+            "thumbnail": "",
+            "preview": "",
+            "createdAt": ""
+        }
+    }
+
+    function ensureServerUnavailableHistoryEntry() {
+        serverContentUnavailable = true
+
+        for (let i = clipboardHistoryModel.count - 1; i >= 0; --i) {
+            const entry = clipboardHistoryModel.get(i)
+            if (!isServerUnavailableEntry(entry))
+                continue
+            if (i === 0) {
+                clipboardHistoryModel.set(0, serverUnavailableEntry())
+                continue
+            }
+            clipboardHistoryModel.remove(i)
+            if (currentPreviewHistoryIndex > i)
+                --currentPreviewHistoryIndex
+            else if (currentPreviewHistoryIndex === i) {
+                currentPreviewHistoryIndex = -1
+                currentPreviewHistoryKey = ""
+            }
+        }
+
+        if (clipboardHistoryModel.count === 0 || !isServerUnavailableEntry(clipboardHistoryModel.get(0))) {
+            clipboardHistoryModel.insert(0, serverUnavailableEntry())
+            if (currentPreviewHistoryIndex >= 0)
+                ++currentPreviewHistoryIndex
+        }
+
+        while (clipboardHistoryModel.count > 15)
+            clipboardHistoryModel.remove(clipboardHistoryModel.count - 1)
+    }
+
+    function showServerUnavailablePlaceholder(message) {
+        serverUnavailableText = message && message.length > 0
+            ? message
+            : "Inhalt Server nicht erreichbar"
+        ensureServerUnavailableHistoryEntry()
+        currentPreviewFromLocalClipboard = false
+        currentPreviewHistoryKey = ""
+        currentPreviewHistoryIndex = -1
+        clearPreviewImageDisplay()
+        rawPreviewText = ""
+        previewImageLoading = false
+        positionHistoryAtStart()
+    }
+
+    function markCurrentLocalClipboardAsSeen() {
+        clipboardSyncRetries = 0
+        clipboardSyncTimer.stop()
+        observedPasteboardChangeCount = Qt.platform.os === "ios"
+            ? localClipboard.pasteboardChangeCount()
+            : observedPasteboardChangeCount
+    }
+
+    function removeServerUnavailablePlaceholder() {
+        let removed = false
+        for (let i = clipboardHistoryModel.count - 1; i >= 0; --i) {
+            if (!isServerUnavailableEntry(clipboardHistoryModel.get(i)))
+                continue
+            clipboardHistoryModel.remove(i)
+            removed = true
+            if (currentPreviewHistoryIndex > i)
+                --currentPreviewHistoryIndex
+            else if (currentPreviewHistoryIndex === i) {
+                currentPreviewHistoryIndex = -1
+                currentPreviewHistoryKey = ""
+            }
+        }
+        if (removed)
+            saveClipboardHistory()
     }
 
     function normalizedHistoryContent(type, content) {
@@ -212,6 +350,9 @@ ApplicationWindow {
     function historyDedupeKey(entry) {
         if (!entry || typeof entry.type !== "string")
             return ""
+
+        if (entry.type === "server-unavailable")
+            return serverUnavailableKey
 
         if (entry.type === "image") {
             const imageData = imageDataForHistoryEntry(entry)
@@ -411,12 +552,15 @@ ApplicationWindow {
         const seen = ({})
         for (let i = 0; i < clipboardHistoryModel.count && i < 15; ++i) {
             const entry = clipboardHistoryModel.get(i)
+            if (isServerUnavailableEntry(entry))
+                continue
             if (!isValidHistoryEntry(entry))
                 continue
             const dedupeKey = historyDedupeKey(entry)
             if (dedupeKey.length === 0 || seen[dedupeKey])
                 continue
-            seen[dedupeKey] = true
+            if (i > 0)
+                seen[dedupeKey] = true
             entries.push({
                 "type": entry.type,
                 "content": entry.content,
@@ -458,6 +602,8 @@ ApplicationWindow {
     function isValidHistoryEntry(entry) {
         if (!entry || typeof entry.type !== "string")
             return false
+        if (entry.type === "server-unavailable")
+            return true
         if (entry.type === "image") {
             const imageData = looksLikePngBase64(entry.thumbnail) ? entry.thumbnail
                 : (looksLikePngBase64(entry.preview) ? entry.preview : entry.content)
@@ -497,8 +643,9 @@ ApplicationWindow {
                 continue
             }
 
-            seen[dedupeKey] = true
-            if (entry.type === "image")
+            if (i > 0)
+                seen[dedupeKey] = true
+            if (i > 0 && entry.type === "image")
                 seenImageKeys.push(dedupeKey)
             const snapshot = historyEntrySnapshot(entry)
             if (snapshot.type === "text" || snapshot.type === "url")
@@ -521,7 +668,9 @@ ApplicationWindow {
         clipboardHistoryModel.clear()
         for (let j = 0; j < entries.length; ++j)
             clipboardHistoryModel.append(entries[j])
-        currentPreviewHistoryIndex = selectedKey.length > 0 ? findHistoryIndex(selectedKey) : -1
+        currentPreviewHistoryIndex = selectedKey.length > 0
+            ? findHistoryIndexPreferIndex(selectedKey, currentPreviewHistoryIndex)
+            : -1
     }
 
     function showRestoredHistoryEntry(index) {
@@ -542,11 +691,8 @@ ApplicationWindow {
             return
         }
 
+        clearPreviewImageDisplay()
         rawPreviewText = entry.content
-        rawPreviewImageBase64 = ""
-        pendingPreviewImageBase64 = ""
-        previewImageLoading = false
-        rawPreviewImageSource = ""
     }
 
     function restoreClipboardHistory() {
@@ -560,6 +706,8 @@ ApplicationWindow {
                 for (let i = 0; i < entries.length && i < 15; ++i) {
                     const entry = entries[i]
                     if (!entry || typeof entry.type !== "string")
+                        continue
+                    if (entry.type === "server-unavailable")
                         continue
                     const entryContent = normalizedHistoryContent(entry.type,
                         typeof entry.content === "string" ? entry.content : "")
@@ -599,12 +747,60 @@ ApplicationWindow {
         loadingClipboardHistory = false
         cleanClipboardHistoryModel()
         if (clipboardHistoryModel.count > 0) {
-            showRestoredHistoryEntry(0)
+            if (initialServerReadPending) {
+                currentPreviewFromLocalClipboard = false
+                currentPreviewHistoryKey = ""
+                currentPreviewHistoryIndex = -1
+                clearPreviewImageDisplay()
+                rawPreviewText = ""
+            } else {
+                showRestoredHistoryEntry(0)
+            }
             saveClipboardHistory()
         }
     }
 
-    function addHistoryEntry(type, content) {
+    function moveHistoryEntryToIndex(index, targetIndex) {
+        if (index < 0 || index >= clipboardHistoryModel.count)
+            return -1
+
+        const entries = []
+        for (let i = 0; i < clipboardHistoryModel.count; ++i)
+            entries.push(historyEntrySnapshot(clipboardHistoryModel.get(i)))
+
+        const movedEntry = entries[index]
+        entries.splice(index, 1)
+        const boundedTargetIndex = Math.max(0, Math.min(targetIndex, entries.length))
+        entries.splice(boundedTargetIndex, 0, movedEntry)
+
+        clipboardHistoryModel.clear()
+        for (let j = 0; j < entries.length; ++j)
+            clipboardHistoryModel.append(entries[j])
+
+        return boundedTargetIndex
+    }
+
+    function findHistoryIndexForDedupeKey(key, preferredIndex) {
+        if (key.length === 0)
+            return -1
+
+        if (preferredIndex >= 0
+                && preferredIndex < clipboardHistoryModel.count) {
+            const preferredKey = historyDedupeKey(clipboardHistoryModel.get(preferredIndex))
+            if (preferredKey === key || sameHistoryDedupeKey(preferredKey, key))
+                return preferredIndex
+        }
+
+        for (let i = 0; i < clipboardHistoryModel.count; ++i) {
+            const entryKey = historyDedupeKey(clipboardHistoryModel.get(i))
+            if (entryKey === key || sameHistoryDedupeKey(entryKey, key))
+                return i
+        }
+
+        return -1
+    }
+
+    function addHistoryEntryAt(type, content, targetIndex) {
         const normalizedContent = normalizedHistoryContent(type, content)
         if (normalizedContent.length === 0)
             return -1
@@ -643,20 +839,25 @@ ApplicationWindow {
                     || existingDedupeKey === key
                     || sameHistoryDedupeKey(existingDedupeKey, incomingDedupeKey))
             if (existing.key === key || sameHistoryDedupeKey(existingDedupeKey, incomingDedupeKey) || sameImage) {
+                if (targetIndex > 0 && i === 0)
+                    continue
+
                 if (type === "image") {
                     if ((!existing.imageId || existing.imageId.length === 0) && imageId.length > 0)
                         clipboardHistoryModel.setProperty(i, "imageId", imageId)
                     if (!existing.thumbnail || existing.thumbnail.length === 0)
                         clipboardHistoryModel.setProperty(i, "thumbnail", thumbnail)
                 }
-                promoteHistoryEntry(i)
+                if (i > 0 || targetIndex === 0)
+                    moveHistoryEntryToIndex(i, targetIndex)
                 cleanClipboardHistoryModel()
                 saveClipboardHistory()
-                return 0
+                return findHistoryIndexForDedupeKey(incomingDedupeKey, targetIndex)
             }
         }
 
-        clipboardHistoryModel.insert(0, {
+        const boundedTargetIndex = Math.max(0, Math.min(targetIndex, clipboardHistoryModel.count))
+        clipboardHistoryModel.insert(boundedTargetIndex, {
             "type": type,
             "content": storedContent,
             "key": key,
@@ -671,13 +872,25 @@ ApplicationWindow {
 
         cleanClipboardHistoryModel()
         saveClipboardHistory()
-        return 0
+        return findHistoryIndexForDedupeKey(incomingDedupeKey, boundedTargetIndex)
+    }
+
+    function addHistoryEntry(type, content) {
+        return addHistoryEntryAt(type, content, 0)
+    }
+
+    function addHistoryEntryAfterCurrent(type, content) {
+        const targetIndex = clipboardHistoryModel.count > 0 ? 1 : 0
+        return addHistoryEntryAt(type, content, targetIndex)
     }
 
     function historyEntryTypeLabel(type, content) {
         if (type === "image")
             return "Bild"
-        if (content.toLowerCase().startsWith("http://") || content.toLowerCase().startsWith("https://"))
+        if (type === "server-unavailable")
+            return serverUnavailableText
+        const safeContent = typeof content === "string" ? content : ""
+        if (safeContent.toLowerCase().startsWith("http://") || safeContent.toLowerCase().startsWith("https://"))
             return "URL"
         return "Text"
     }
@@ -685,27 +898,35 @@ ApplicationWindow {
     function historyEntryIconLabel(type, content) {
         if (type === "image")
             return ""
+        if (type === "server-unavailable")
+            return "!"
         return historyEntryTypeLabel(type, content) === "URL" ? "URL" : "TXT"
     }
 
     function historyEntryPreview(type, content, createdAt) {
         if (type === "image")
             return "<span style=\"font-weight:600;\">Bild</span><br><span style=\"color:#6b7280;\">" + createdAt + "</span>"
+        if (type === "server-unavailable")
+            return "<span style=\"font-weight:600;\">Server</span><br><span style=\"color:#b91c1c;\">nicht erreichbar</span>"
 
-        let preview = content.replace(/\s+/g, " ").trim()
+        const safeContent = typeof content === "string" ? content : ""
+        let preview = safeContent.replace(/\s+/g, " ").trim()
         if (preview.length > 42)
             preview = preview.slice(0, 39) + "..."
-        return "<span style=\"font-weight:600;\">" + historyEntryTypeLabel(type, content)
+        return "<span style=\"font-weight:600;\">" + historyEntryTypeLabel(type, safeContent)
             + "</span><br><span style=\"color:#6b7280;\">" + escapeHtml(preview) + "</span>"
     }
 
     function historyTileText(type, content, index) {
         if (type === "image")
             return (index === 0 ? "Aktuell" : "Alt") + "\nBild"
+        if (type === "server-unavailable")
+            return "Server\nnicht erreichbar"
 
-        let preview = content.replace(/\s+/g, " ").trim()
+        const safeContent = typeof content === "string" ? content : ""
+        let preview = safeContent.replace(/\s+/g, " ").trim()
         if (preview.length === 0)
-            preview = historyEntryTypeLabel(type, content)
+            preview = historyEntryTypeLabel(type, safeContent)
         if (preview.length > 22)
             preview = preview.slice(0, 21) + "..."
         return preview
@@ -715,22 +936,38 @@ ApplicationWindow {
         if (!currentPreviewFromLocalClipboard)
             return
 
-        if (rawPreviewImageBase64.length > 0)
-            addHistoryEntry("image", rawPreviewImageBase64)
-        else if (rawPreviewText.trim().length > 0)
-            addHistoryEntry("text", rawPreviewText)
+        const existingIndex = findHistoryIndexPreferIndex(currentPreviewHistoryKey, currentPreviewHistoryIndex)
+        if (existingIndex >= 0) {
+            currentPreviewHistoryIndex = existingIndex
+            return
+        }
 
-        currentPreviewFromLocalClipboard = false
-        currentPreviewHistoryKey = ""
-        currentPreviewHistoryIndex = -1
+        if (rawPreviewImageBase64.length > 0)
+            currentPreviewHistoryIndex = addHistoryEntryAfterCurrent("image", rawPreviewImageBase64)
+        else if (rawPreviewText.trim().length > 0)
+            currentPreviewHistoryIndex = addHistoryEntryAfterCurrent("text", rawPreviewText)
+
+        currentPreviewHistoryKey = currentPreviewHistoryIndex >= 0
+            ? clipboardHistoryModel.get(currentPreviewHistoryIndex).key
+            : ""
     }
 
     function showLocalPreviewText(text) {
+        debugLog("show local text",
+            debugPreviewText(text)
+            + " active=" + networkClipboard.serverActive)
+        if (networkClipboard.serverActive) {
+            serverContentUnavailable = false
+            removeServerUnavailablePlaceholder()
+        } else {
+            ensureServerUnavailableHistoryEntry()
+        }
+        clearPreviewImageDisplay()
         rawPreviewText = text
-        rawPreviewImageBase64 = ""
-        rawPreviewImageSource = ""
         currentPreviewFromLocalClipboard = true
-        currentPreviewHistoryIndex = networkClipboard.serverActive ? addHistoryEntry("text", text) : -1
+        currentPreviewHistoryIndex = networkClipboard.serverActive
+            ? addHistoryEntry("text", text)
+            : addHistoryEntryAfterCurrent("text", text)
         const normalizedText = normalizedHistoryContent("text", text)
         currentPreviewHistoryKey = currentPreviewHistoryIndex >= 0
             ? clipboardHistoryModel.get(currentPreviewHistoryIndex).key
@@ -738,8 +975,20 @@ ApplicationWindow {
     }
 
     function showLocalPreviewImage(base64, fingerprint) {
+        debugLog("show local image",
+            "base64Len=" + base64.length
+            + " fingerprint=" + fingerprint
+            + " active=" + networkClipboard.serverActive)
+        if (networkClipboard.serverActive) {
+            serverContentUnavailable = false
+            removeServerUnavailablePlaceholder()
+        } else {
+            ensureServerUnavailableHistoryEntry()
+        }
         currentPreviewFromLocalClipboard = true
-        currentPreviewHistoryIndex = networkClipboard.serverActive ? addHistoryEntry("image", base64) : -1
+        currentPreviewHistoryIndex = networkClipboard.serverActive
+            ? addHistoryEntry("image", base64)
+            : addHistoryEntryAfterCurrent("image", base64)
         currentPreviewHistoryKey = currentPreviewHistoryIndex >= 0 ? clipboardHistoryModel.get(currentPreviewHistoryIndex).key : historyKey("image", fingerprint)
         showPreviewImage(currentPreviewHistoryIndex >= 0
             ? displayImageForHistoryEntry(clipboardHistoryModel.get(currentPreviewHistoryIndex))
@@ -747,9 +996,11 @@ ApplicationWindow {
     }
 
     function showNetworkPreviewText(text) {
+        debugLog("show network text", debugPreviewText(text))
+        serverContentUnavailable = false
+        removeServerUnavailablePlaceholder()
+        clearPreviewImageDisplay()
         rawPreviewText = text
-        rawPreviewImageBase64 = ""
-        rawPreviewImageSource = ""
         currentPreviewFromLocalClipboard = false
         currentPreviewHistoryIndex = addHistoryEntry("text", text)
         const normalizedText = normalizedHistoryContent("text", text)
@@ -759,6 +1010,9 @@ ApplicationWindow {
     }
 
     function showNetworkPreviewImage(base64) {
+        debugLog("show network image", "base64Len=" + base64.length)
+        serverContentUnavailable = false
+        removeServerUnavailablePlaceholder()
         currentPreviewFromLocalClipboard = false
         currentPreviewHistoryIndex = addHistoryEntry("image", base64)
         currentPreviewHistoryKey = currentPreviewHistoryIndex >= 0 ? clipboardHistoryModel.get(currentPreviewHistoryIndex).key : ""
@@ -772,6 +1026,16 @@ ApplicationWindow {
             return
 
         const entry = clipboardHistoryModel.get(index)
+        if (serverContentUnavailable && index === 0)
+            return
+        if (isServerUnavailableEntry(entry))
+            return
+        if (index > 0) {
+            initialServerReadPending = false
+            initialServerReadTimer.stop()
+            cancelForcedServerPreview()
+            localClipboardSyncPausedUntil = Date.now() + 8000
+        }
         currentPreviewFromLocalClipboard = false
         currentPreviewHistoryKey = entry.key
         currentPreviewHistoryIndex = index
@@ -784,11 +1048,26 @@ ApplicationWindow {
             return
         }
 
+        clearPreviewImageDisplay()
         rawPreviewText = entry.content
-        rawPreviewImageBase64 = ""
-        pendingPreviewImageBase64 = ""
-        previewImageLoading = false
-        rawPreviewImageSource = ""
+    }
+
+    function selectNetworkClipboardSlot() {
+        currentPreviewFromLocalClipboard = false
+        if (clipboardHistoryModel.count > 0) {
+            if (serverContentUnavailable && isServerUnavailableEntry(clipboardHistoryModel.get(0))) {
+                showServerUnavailablePlaceholder()
+                return
+            }
+            selectHistoryEntry(0)
+            positionHistoryAtStart()
+            return
+        }
+
+        currentPreviewHistoryKey = ""
+        currentPreviewHistoryIndex = -1
+        clearPreviewImageDisplay()
+        rawPreviewText = ""
     }
 
     function selectedHistoryIndex() {
@@ -835,6 +1114,8 @@ ApplicationWindow {
     function setHistoryEntryCurrent(index) {
         if (index < 0 || index >= clipboardHistoryModel.count)
             return
+        if (serverContentUnavailable || isServerUnavailableEntry(clipboardHistoryModel.get(index)))
+            return
 
         const promotedEntry = promoteHistoryEntry(index)
         currentPreviewFromLocalClipboard = true
@@ -874,9 +1155,8 @@ ApplicationWindow {
         observedLocalImageFingerprint = ""
         lastAutoSentImageFingerprint = ""
         recentNetworkImageFingerprint = ""
+        clearPreviewImageDisplay()
         rawPreviewText = text
-        rawPreviewImageBase64 = ""
-        rawPreviewImageSource = ""
         localClipboard.setText(text)
         observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
 
@@ -902,6 +1182,11 @@ ApplicationWindow {
 
         if (appInForeground() && networkClipboard.serverActive) {
             if (force) {
+                debugLog("refresh latest force",
+                    "retries=" + initialServerReadRetries
+                    + " serverActive=" + networkClipboard.serverActive)
+                serverContentUnavailable = false
+                removeServerUnavailablePlaceholder()
                 forceNextNetworkText = true
                 waitingForServerText = true
                 serverReadGuardTimer.restart()
@@ -910,7 +1195,27 @@ ApplicationWindow {
                 networkClipboard.forcePollLatest()
             else
                 networkClipboard.pollLatest()
+        } else if (force) {
+            debugLog("refresh latest skipped",
+                "foreground=" + appInForeground()
+                + " serverActive=" + networkClipboard.serverActive)
         }
+    }
+
+    function scheduleInitialServerRead() {
+        initialServerReadPending = true
+        initialServerReadRetries = 12
+        debugLog("initial read scheduled",
+            "serverActive=" + networkClipboard.serverActive
+            + " index=" + currentPreviewHistoryIndex
+            + " key=" + currentPreviewHistoryKey)
+        initialServerReadTimer.restart()
+    }
+
+    function scheduleInitialServerReadIfActive() {
+        if (!networkClipboard.serverActive || !appInForeground() || isBrowsingHistoryEntry())
+            return
+        scheduleInitialServerRead()
     }
 
     function serverDisplayText(name, active) {
@@ -960,16 +1265,33 @@ ApplicationWindow {
         return result.replace(/\n/g, "<br>")
     }
 
+    function usePlainPreviewText(text) {
+        return text.length > 20000
+    }
+
+    function previewDisplayText(text) {
+        if (!usePlainPreviewText(text))
+            return richClipboardText(text)
+
+        const maxPreviewLength = 80000
+        if (text.length <= maxPreviewLength)
+            return text
+
+        return text.slice(0, maxPreviewLength)
+            + "\n\n[Anzeige gekuerzt: " + text.length + " Zeichen]"
+    }
+
     onActiveChanged: {
         if (active)
             scheduleClipboardSync()
     }
 
     Component.onCompleted: {
+        debugLog("component completed",
+            "serverActive=" + networkClipboard.serverActive
+            + " status=" + networkClipboard.status)
+        scheduleInitialServerRead()
         restoreClipboardHistory()
-        scheduleClipboardSync()
-        if (networkClipboard.serverActive)
-            refreshNetworkClipboard(true)
         if (Qt.platform.os === "ios" && localClipboard.shouldOfferPasteSettings)
             pasteSettingsDialog.open()
     }
@@ -1002,7 +1324,57 @@ ApplicationWindow {
         id: serverReadGuardTimer
         interval: 1500
         repeat: false
-        onTriggered: waitingForServerText = false
+        onTriggered: {
+            waitingForServerText = false
+            if (initialServerReadPending && initialServerReadRetries > 0) {
+                --initialServerReadRetries
+                initialServerReadTimer.restart()
+                return
+            }
+            initialServerReadPending = false
+            if (!networkClipboard.serverActive)
+                showServerUnavailablePlaceholder()
+            if (!networkClipboard.serverActive)
+                scheduleClipboardSync()
+        }
+    }
+
+    Timer {
+        id: initialServerReadTimer
+        interval: 500
+        repeat: false
+        onTriggered: {
+            if (!initialServerReadPending)
+                return
+
+            if (isBrowsingHistoryEntry()) {
+                debugLog("initial read cancelled browsing history",
+                    "index=" + currentPreviewHistoryIndex)
+                initialServerReadPending = false
+                waitingForServerText = false
+                return
+            }
+
+            if (networkClipboard.serverActive) {
+                debugLog("initial read timer active server",
+                    "retries=" + initialServerReadRetries)
+                refreshNetworkClipboard(true)
+                return
+            }
+
+            if (initialServerReadRetries > 0) {
+                --initialServerReadRetries
+                debugLog("initial read retry waiting for server",
+                    "remaining=" + initialServerReadRetries)
+                restart()
+                return
+            }
+
+            debugLog("initial read failed no server")
+            initialServerReadPending = false
+            showServerUnavailablePlaceholder()
+            scheduleClipboardSync()
+        }
     }
 
     Timer {
@@ -1018,9 +1390,14 @@ ApplicationWindow {
             pendingPasteboardImageBase64 = ""
             pendingPasteboardImageFingerprint = ""
 
-            if (!localClipboard.setImageBase64(base64))
+            if (!localClipboard.setImageBase64(base64)) {
+                debugLog("deferred image pasteboard set failed",
+                    "fingerprint=" + fingerprint + " base64Len=" + base64.length)
                 return
+            }
 
+            debugLog("deferred image pasteboard set ok",
+                "fingerprint=" + fingerprint + " base64Len=" + base64.length)
             observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
             observedLocalImageFingerprint = fingerprint
             recentNetworkImageFingerprint = fingerprint
@@ -1050,9 +1427,15 @@ ApplicationWindow {
         function onLatestReceived(text) {
             localPublishGuardUntil = 0
             const forceUpdate = forceNextNetworkText
+            debugLog("latest text received",
+                debugPreviewText(text)
+                + " force=" + forceUpdate
+                + " browsing=" + isBrowsingHistoryEntry())
+            initialServerReadPending = false
+            initialServerReadTimer.stop()
             if (!forceUpdate && isBrowsingHistoryEntry()) {
                 addHistoryEntry("text", text)
-                currentPreviewHistoryIndex = findHistoryIndex(currentPreviewHistoryKey)
+                currentPreviewHistoryIndex = findHistoryIndexPreferIndex(currentPreviewHistoryKey, currentPreviewHistoryIndex)
                 return
             }
 
@@ -1066,6 +1449,7 @@ ApplicationWindow {
             lastAutoSentText = text
             lastAutoSentImageFingerprint = ""
             observedLocalClipboardText = text
+            localClipboardSyncPausedUntil = Date.now() + 2500
             localClipboard.setText(text)
             observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
             showNetworkPreviewText(text)
@@ -1079,15 +1463,26 @@ ApplicationWindow {
 
         function onLatestImageReceived(base64) {
             const forceUpdate = forceNextNetworkText
+            debugLog("latest image received",
+                "base64Len=" + base64.length
+                + " force=" + forceUpdate
+                + " browsing=" + isBrowsingHistoryEntry())
+            initialServerReadPending = false
+            initialServerReadTimer.stop()
             if (!forceUpdate && isBrowsingHistoryEntry()) {
                 addHistoryEntry("image", base64)
-                currentPreviewHistoryIndex = findHistoryIndex(currentPreviewHistoryKey)
+                currentPreviewHistoryIndex = findHistoryIndexPreferIndex(currentPreviewHistoryKey, currentPreviewHistoryIndex)
                 return
             }
 
             const incomingFingerprint = localClipboard.imageFingerprintFromBase64(base64)
-            if (shouldIgnoreIncomingImageDuringLocalPublish(incomingFingerprint))
+            if (shouldIgnoreIncomingImageDuringLocalPublish(incomingFingerprint)) {
+                debugLog("latest image ignored during local publish",
+                    "fingerprint=" + incomingFingerprint
+                    + " guardMs=" + Math.max(0, localPublishGuardUntil - Date.now())
+                    + " imageSendInFlight=" + imageSendInFlight)
                 return
+            }
 
             localPublishGuardUntil = 0
             forceNextNetworkText = false
@@ -1106,12 +1501,14 @@ ApplicationWindow {
                 lastAutoSentImageFingerprint = incomingFingerprint
                 observedLocalClipboardText = ""
                 lastAutoSentText = ""
+                localClipboardSyncPausedUntil = Date.now() + 3500
                 showNetworkPreviewImage(base64)
                 return
             }
 
             observedLocalClipboardText = ""
             lastAutoSentText = ""
+            localClipboardSyncPausedUntil = Date.now() + 3500
             showNetworkPreviewImage(base64)
 
             observedLocalImageFingerprint = incomingFingerprint
@@ -1139,13 +1536,75 @@ ApplicationWindow {
             imageSendInFlight = false
         }
 
-        function onServerActiveChanged() {
+        function onLatestReadFailed() {
+            debugLog("latest read failed",
+                "serverActive=" + networkClipboard.serverActive
+                + " retries=" + initialServerReadRetries
+                + " status=" + networkClipboard.status)
+            forceNextNetworkText = false
+            waitingForServerText = false
+            serverReadGuardTimer.stop()
+            initialServerReadTimer.stop()
             if (networkClipboard.serverActive) {
+                serverContentUnavailable = false
+                removeServerUnavailablePlaceholder()
+                if (initialServerReadPending && initialServerReadRetries > 0) {
+                    --initialServerReadRetries
+                    initialServerReadTimer.restart()
+                    return
+                }
+
+                initialServerReadPending = false
+                markCurrentLocalClipboardAsSeen()
+                return
+            }
+
+            if (initialServerReadPending && initialServerReadRetries > 0) {
+                --initialServerReadRetries
+                initialServerReadTimer.restart()
+                return
+            }
+
+            initialServerReadPending = false
+            if (isBrowsingHistoryEntry())
+                return
+            showServerUnavailablePlaceholder()
+            if (!networkClipboard.serverActive)
+                scheduleClipboardSync()
+        }
+
+        function onLatestReadEmpty() {
+            debugLog("latest read empty",
+                "serverActive=" + networkClipboard.serverActive
+                + " retries=" + initialServerReadRetries
+                + " status=" + networkClipboard.status)
+            forceNextNetworkText = false
+            waitingForServerText = false
+            serverReadGuardTimer.stop()
+            initialServerReadTimer.stop()
+            initialServerReadPending = false
+            markCurrentLocalClipboardAsSeen()
+            if (isBrowsingHistoryEntry())
+                return
+            showServerUnavailablePlaceholder("Netz-Zwischenablage leer")
+        }
+
+        function onServerActiveChanged() {
+            debugLog("server active changed",
+                "active=" + networkClipboard.serverActive
+                + " status=" + networkClipboard.status)
+            if (networkClipboard.serverActive) {
+                serverContentUnavailable = false
+                removeServerUnavailablePlaceholder()
                 observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
                 lastAutoSentText = observedLocalClipboardText
                 moveCurrentLocalPreviewToHistory()
+                if (currentPreviewHistoryIndex > 0 && Date.now() >= localClipboardSyncPausedUntil)
+                    selectNetworkClipboardSlot()
                 localPublishGuardUntil = 0
-                refreshNetworkClipboard(true)
+                scheduleInitialServerRead()
+                clipboardSyncRetries = 0
+                clipboardSyncTimer.stop()
             } else {
                 lastAutoSentText = ""
                 lastAutoSentImageFingerprint = ""
@@ -1153,7 +1612,34 @@ ApplicationWindow {
                 pendingAutoSendImageFingerprint = ""
                 recentNetworkImageFingerprint = ""
                 imageSendInFlight = false
+                initialServerReadPending = false
+                initialServerReadTimer.stop()
+                if (isBrowsingHistoryEntry())
+                    ensureServerUnavailableHistoryEntry()
+                else
+                    showServerUnavailablePlaceholder()
+                scheduleClipboardSync()
             }
+        }
+
+        function onServersChanged() {
+            debugLog("servers changed",
+                "active=" + networkClipboard.serverActive
+                + " count=" + networkClipboard.servers.length)
+            scheduleInitialServerReadIfActive()
+        }
+
+        function onServerUrlChanged() {
+            debugLog("server url changed",
+                "active=" + networkClipboard.serverActive)
+            scheduleInitialServerReadIfActive()
+        }
+
+        function onTokenChanged() {
+            debugLog("token changed",
+                "active=" + networkClipboard.serverActive
+                + " tokenLen=" + networkClipboard.token.length)
+            scheduleInitialServerReadIfActive()
         }
 
     }
@@ -1297,7 +1783,11 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            property string fieldsetTitle: rawPreviewImageBase64.length > 0
+            property string fieldsetTitle: showingServerUnavailablePreview
+                ? "Inhalt Netz-Zwischenablage"
+                : showingInitialServerReadPreview
+                ? "Inhalt Netz-Zwischenablage"
+                : rawPreviewImageBase64.length > 0
                 ? (currentPreviewFromLocalClipboard && !networkClipboard.serverActive
                     ? "Bild Lokale-Zwischenablage"
                     : "Bild Netz-Zwischenablage")
@@ -1328,9 +1818,12 @@ ApplicationWindow {
                         spacing: 8
 
                         Label {
-                            text: clipboardHistoryModel.count > 0
-                                ? (currentPreviewHistoryKey.length > 0 && clipboardHistoryModel.count > 0
-                                    && clipboardHistoryModel.get(0).key === currentPreviewHistoryKey
+                            text: showingServerUnavailablePreview
+                                ? serverUnavailableText
+                                : showingInitialServerReadPreview
+                                ? "Serverinhalt wird gelesen"
+                                : clipboardHistoryModel.count > 0
+                                ? (currentPreviewHistoryIndex === 0
                                     ? "Aktueller Eintrag"
                                     : "Alter Eintrag")
                                 : ""
@@ -1339,8 +1832,64 @@ ApplicationWindow {
                             visible: text.length > 0
                         }
 
+                        Item {
+                            visible: showingServerUnavailablePreview
+                                || showingInitialServerReadPreview
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: Math.max(120, Math.min(parent.width - 24, 300))
+                                height: Math.max(120, Math.min(parent.height - 24, 180))
+                                color: showingServerUnavailablePreview ? "#fef2f2" : "#f8fafc"
+                                border.color: showingServerUnavailablePreview ? "#fca5a5" : "#cbd5e1"
+                                border.width: 1
+                                radius: 4
+
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 18
+                                    spacing: 10
+
+                                    Rectangle {
+                                        Layout.alignment: Qt.AlignHCenter
+                                        width: 52
+                                        height: 52
+                                        radius: 26
+                                        color: "#ffffff"
+                                        border.color: showingServerUnavailablePreview ? "#ef4444" : "#64748b"
+                                        border.width: 2
+
+                                        Label {
+                                            anchors.centerIn: parent
+                                            text: showingServerUnavailablePreview ? "!" : "..."
+                                            font.pixelSize: 30
+                                            font.bold: true
+                                            color: showingServerUnavailablePreview ? "#b91c1c" : "#475569"
+                                        }
+                                    }
+
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: showingServerUnavailablePreview
+                                            ? serverUnavailableText
+                                            : "Lade Netz-Zwischenablage..."
+                                        font.pixelSize: 17
+                                        font.bold: true
+                                        color: showingServerUnavailablePreview ? "#991b1b" : "#334155"
+                                        horizontalAlignment: Text.AlignHCenter
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                            }
+                        }
+
                         ScrollView {
-                            visible: rawPreviewImageBase64.length === 0 && !previewImageLoading
+                            visible: !showingServerUnavailablePreview
+                                && !showingInitialServerReadPreview
+                                && rawPreviewImageBase64.length === 0
+                                && !previewImageLoading
                             Layout.fillWidth: true
                             Layout.fillHeight: true
 
@@ -1351,8 +1900,10 @@ ApplicationWindow {
                                 selectByMouse: true
                                 selectByKeyboard: true
                                 persistentSelection: true
-                                textFormat: TextEdit.RichText
-                                text: richClipboardText(rawPreviewText)
+                                textFormat: usePlainPreviewText(rawPreviewText)
+                                    ? TextEdit.PlainText
+                                    : TextEdit.RichText
+                                text: previewDisplayText(rawPreviewText)
                                 onLinkActivated: function(link) { Qt.openUrlExternally(link) }
                                 background: Rectangle {
                                     color: "transparent"
@@ -1364,10 +1915,12 @@ ApplicationWindow {
                         Image {
                             id: imagePreview
                             property bool triedFileFallback: false
-                            visible: rawPreviewImageBase64.length > 0
+                            visible: !showingServerUnavailablePreview
+                                && !showingInitialServerReadPreview
+                                && rawPreviewImageBase64.length > 0
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            source: visible
+                            source: rawPreviewImageBase64.length > 0
                                 ? (rawPreviewImageSource.length > 0
                                     ? rawPreviewImageSource
                                     : "data:image/png;base64," + rawPreviewImageBase64)
@@ -1436,8 +1989,12 @@ ApplicationWindow {
 
                                 Rectangle {
                                     anchors.fill: parent
-                                    color: index === 0 ? "#eef2ff" : "transparent"
-                                    border.color: index === 0 ? "#c7d2fe" : "#e5e7eb"
+                                    color: model.type === "server-unavailable"
+                                        ? "#fef2f2"
+                                        : (index === 0 ? "#eef2ff" : "transparent")
+                                    border.color: model.type === "server-unavailable"
+                                        ? "#fca5a5"
+                                        : (index === 0 ? "#c7d2fe" : "#e5e7eb")
                                     border.width: 1
                                     radius: 2
                                 }
@@ -1445,10 +2002,12 @@ ApplicationWindow {
                                 Rectangle {
                                     anchors.fill: parent
                                     color: "transparent"
-                                    border.color: model.key === currentPreviewHistoryKey
+                                    border.color: index === currentPreviewHistoryIndex
+                                        && !(serverContentUnavailable && index === 0)
                                         ? (index === 0 ? "#16a34a" : "#111827")
                                         : "transparent"
-                                    border.width: model.key === currentPreviewHistoryKey
+                                    border.width: index === currentPreviewHistoryIndex
+                                        && !(serverContentUnavailable && index === 0)
                                         ? (index === 0 ? 3 : 2)
                                         : 0
                                     radius: 2
@@ -1464,8 +2023,10 @@ ApplicationWindow {
                                         ? Math.min(parent.width - 14, parent.height - 14)
                                         : Math.min(38, parent.width - 6)
                                     height: width
-                                    color: model.type === "image" ? "transparent" : "#f3f4f6"
-                                    border.color: "#d1d5db"
+                                    color: model.type === "image"
+                                        ? "transparent"
+                                        : (model.type === "server-unavailable" ? "#ffffff" : "#f3f4f6")
+                                    border.color: model.type === "server-unavailable" ? "#ef4444" : "#d1d5db"
                                     border.width: 1
 
                                     Image {
@@ -1487,7 +2048,8 @@ ApplicationWindow {
                                         anchors.centerIn: parent
                                         text: historyEntryIconLabel(model.type, model.content)
                                         font.pixelSize: 11
-                                        color: "#6b7280"
+                                        font.bold: model.type === "server-unavailable"
+                                        color: model.type === "server-unavailable" ? "#b91c1c" : "#6b7280"
                                     }
                                 }
 
@@ -1512,6 +2074,7 @@ ApplicationWindow {
 
                                 MouseArea {
                                     anchors.fill: parent
+                                    enabled: !(serverContentUnavailable && index === 0)
                                     onClicked: function(mouse) {
                                         selectHistoryEntry(index)
                                         mouse.accepted = true
@@ -1519,7 +2082,10 @@ ApplicationWindow {
                                 }
 
                                 Rectangle {
-                                    visible: index === currentPreviewHistoryIndex && index > 0
+                                    visible: networkClipboard.serverActive
+                                        && !serverContentUnavailable
+                                        && index === currentPreviewHistoryIndex
+                                        && index > 0
                                     anchors.right: parent.right
                                     anchors.rightMargin: 5
                                     anchors.top: parent.top

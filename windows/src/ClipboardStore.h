@@ -23,6 +23,11 @@ signals:
     void latestChanged(const ClipboardEntry &entry);
 
 private:
+    QString storagePath() const;
+    void loadHistory();
+    void saveHistory() const;
+    void pruneHistoryLocked();
+
     mutable QReadWriteLock m_lock;
     QList<ClipboardEntry> m_history;
     int m_maxHistoryItems = 100;
