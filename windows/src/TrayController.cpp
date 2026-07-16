@@ -27,7 +27,6 @@
 namespace {
 constexpr qint64 ClipboardIgnoreWindowMs = 1500;
 constexpr qint64 RecentImagePublishSuppressMs = 6000;
-constexpr qint64 FreshRemoteEntryWindowSecs = 15;
 
 QByteArray imagePngData(const QImage &sourceImage)
 {
@@ -479,8 +478,9 @@ void TrayController::pollLatestFromServer()
     QNetworkRequest request = apiRequest(QStringLiteral("/api/clipboard/latest"));
     if (!m_lastSeenNetworkEntryId.isEmpty())
         request.setRawHeader("If-None-Match", m_lastSeenNetworkEntryId.toUtf8());
+    const qint64 requestStartedAt = QDateTime::currentMSecsSinceEpoch();
     QNetworkReply *reply = m_network.get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, requestStartedAt]() {
         if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 304) {
             reply->deleteLater();
             return;
@@ -494,6 +494,19 @@ void TrayController::pollLatestFromServer()
         const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &parseError);
         if (parseError.error == QJsonParseError::NoError && document.isObject()) {
             const ClipboardEntry entry = ClipboardEntry::fromJson(document.object());
+            if (requestStartedAt < m_lastLocalPostCompletedAt) {
+                reply->deleteLater();
+                return;
+            }
+            if (m_latestNetworkEntry
+                && !entry.id.isEmpty()
+                && entry.id != m_latestNetworkEntry->id
+                && entry.timestamp > 0
+                && m_latestNetworkEntry->timestamp > 0
+                && entry.timestamp < m_latestNetworkEntry->timestamp) {
+                reply->deleteLater();
+                return;
+            }
             m_latestNetworkEntry = entry;
             if (m_networkHistory.isEmpty() || m_networkHistory.first().id != entry.id)
                 m_networkHistory.prepend(entry);
@@ -983,23 +996,9 @@ void TrayController::sendEntryToServer(const ClipboardEntry &entry, bool showSuc
                 const QJsonDocument document = QJsonDocument::fromJson(latestReply->readAll(), &parseError);
                 if (parseError.error == QJsonParseError::NoError && document.isObject()) {
                     const ClipboardEntry latest = ClipboardEntry::fromJson(document.object());
-                    const bool freshRemoteEntry = latest.deviceId != m_deviceId
-                        && latest.timestamp > 0
-                        && QDateTime::currentSecsSinceEpoch() - latest.timestamp <= FreshRemoteEntryWindowSecs;
-                    const bool unseenEntry = latest.id.isEmpty() || latest.id != m_lastSeenNetworkEntryId;
                     if (sameClipboardPayload(entry, latest)) {
                         m_latestNetworkEntry = latest;
                         m_lastSeenNetworkEntryId = latest.id;
-                        shouldSend = false;
-                    } else if (freshRemoteEntry && unseenEntry) {
-                        m_latestNetworkEntry = latest;
-                        if (m_networkHistory.isEmpty() || m_networkHistory.first().id != latest.id)
-                            m_networkHistory.prepend(latest);
-                        while (m_networkHistory.size() > 15)
-                            m_networkHistory.removeLast();
-                        if (m_contentWindow && m_contentWindow->isVisible())
-                            updateContentWindow();
-                        applyNetworkEntryToClipboard(latest, false, false);
                         shouldSend = false;
                     }
                 }
@@ -1027,6 +1026,7 @@ void TrayController::postEntryToServer(const ClipboardEntry &entry, bool showSuc
             m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Could not send to server: %1").arg(reply->errorString()));
         } else {
             m_latestNetworkEntry = entry;
+            m_lastLocalPostCompletedAt = QDateTime::currentMSecsSinceEpoch();
             if (m_networkHistory.isEmpty() || m_networkHistory.first().id != entry.id)
                 m_networkHistory.prepend(entry);
             while (m_networkHistory.size() > 15)

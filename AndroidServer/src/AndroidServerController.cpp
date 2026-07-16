@@ -39,6 +39,21 @@ QString fingerprintForBase64(const QString &base64)
         return {};
     return QString::fromLatin1(QCryptographicHash::hash(base64.toLatin1(), QCryptographicHash::Sha256).toHex());
 }
+
+#ifdef Q_OS_ANDROID
+bool isAppliedNetworkImageBase64(const QString &base64)
+{
+    if (base64.isEmpty())
+        return false;
+
+    const QJniObject encoded = QJniObject::fromString(base64);
+    return QJniObject::callStaticMethod<jboolean>(
+        "org/qtproject/example/NetworkClipboardAndroidServer/ImageClipboardHelper",
+        "isAppliedNetworkImageBase64",
+        "(Ljava/lang/String;)Z",
+        encoded.object<jstring>());
+}
+#endif
 }
 
 AndroidServerController::AndroidServerController(QObject *parent)
@@ -257,6 +272,15 @@ void AndroidServerController::onClipboardChanged()
     const QString imageBase64 = clipboardImageBase64();
     if (!imageBase64.isEmpty()) {
         const QString fingerprint = clipboardImageFingerprint();
+#ifdef Q_OS_ANDROID
+        if (isAppliedNetworkImageBase64(imageBase64)) {
+            m_ignoredClipboardContent.clear();
+            m_ignoredClipboardImageFingerprint = fingerprint;
+            m_lastPublishedContent.clear();
+            m_lastPublishedImageFingerprint = fingerprint;
+            return;
+        }
+#endif
         if (now < m_ignoreClipboardChangesUntil && fingerprint == m_ignoredClipboardImageFingerprint)
             return;
         if (!m_autoPublish || !m_started || fingerprint == m_lastPublishedImageFingerprint)

@@ -88,6 +88,7 @@ private:
     QString m_lastPublishedContent;
     QByteArray m_lastPublishedImageHash;
     qint64 m_recentImagePublishUntil = 0;
+    qint64 m_lastLocalPostCompletedAt = 0;
     QSize m_recentPublishedImageSize;
     std::optional<ClipboardEntry> m_latestNetworkEntry;
     QList<ClipboardEntry> m_networkHistory;

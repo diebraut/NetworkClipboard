@@ -17,6 +17,7 @@ import java.security.MessageDigest;
 public final class ImageClipboardHelper
 {
     private static final int MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+    private static volatile String lastAppliedNetworkImageFingerprint = "";
 
     private ImageClipboardHelper()
     {
@@ -112,9 +113,33 @@ public final class ImageClipboardHelper
 
             clipboard.setPrimaryClip(
                 ClipData.newUri(context.getContentResolver(), "Network Clipboard Image", uri));
+            lastAppliedNetworkImageFingerprint = fingerprintForBase64(base64);
             return true;
         } catch (Exception ignored) {
             return false;
+        }
+    }
+
+    public static boolean isAppliedNetworkImageBase64(String base64)
+    {
+        String fingerprint = fingerprintForBase64(base64);
+        return !fingerprint.isEmpty() && fingerprint.equals(lastAppliedNetworkImageFingerprint);
+    }
+
+    private static String fingerprintForBase64(String base64)
+    {
+        if (base64 == null || base64.isEmpty())
+            return "";
+
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(base64.getBytes("ISO-8859-1"));
+            StringBuilder builder = new StringBuilder();
+            for (byte value : hash)
+                builder.append(String.format("%02x", value & 0xff));
+            return builder.toString();
+        } catch (Exception ignored) {
+            return "";
         }
     }
 

@@ -1,9 +1,10 @@
-#include "TrayController.h"
+﻿#include "TrayController.h"
 
 #include <QApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QHostInfo>
+#include <QLockFile>
 #include <QSettings>
 #include <QStringList>
 #include <QUrl>
@@ -33,6 +34,11 @@ int main(int argc, char *argv[])
     QApplication::setQuitOnLastWindowClosed(false);
     QCoreApplication::setOrganizationName(QStringLiteral("LocalTools"));
     QCoreApplication::setApplicationName(QStringLiteral("NetworkClipboard"));
+
+    QLockFile instanceLock(QDir::temp().filePath(QStringLiteral("NetworkClipboardWindows.lock")));
+    instanceLock.setStaleLockTime(30000);
+    if (!instanceLock.tryLock(100))
+        return 0;
 
     QSettings settings;
     QSettings serviceSettings(serviceConfigPath(), QSettings::IniFormat);

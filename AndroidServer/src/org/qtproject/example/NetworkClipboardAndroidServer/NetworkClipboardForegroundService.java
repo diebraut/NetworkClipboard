@@ -27,8 +27,6 @@ import org.json.JSONObject;
 import org.qtproject.qt.android.bindings.QtActivity;
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.DatagramPacket;
@@ -429,39 +427,10 @@ public class NetworkClipboardForegroundService extends Service
 
     private boolean setImageClipboard(String base64)
     {
-        try {
-            byte[] pngData = Base64.decode(base64, Base64.DEFAULT);
-            if (pngData.length == 0 || pngData.length > MAX_IMAGE_BYTES)
-                return false;
-
-            File directory = new File(getCacheDir(), "network_clipboard");
-            if (!directory.exists() && !directory.mkdirs())
-                return false;
-
-            File[] oldFiles = directory.listFiles();
-            if (oldFiles != null) {
-                for (File oldFile : oldFiles)
-                    oldFile.delete();
-            }
-
-            File imageFile = new File(directory, "clipboard-" + System.currentTimeMillis() + ".png");
-            try (FileOutputStream output = new FileOutputStream(imageFile)) {
-                output.write(pngData);
-            }
-
-            Uri uri = NetworkClipboardImageProvider.uriForFile(this, imageFile);
-            ClipboardManager clipboard =
-                (ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE);
-            if (clipboard == null)
-                return false;
-
-            clipboard.setPrimaryClip(
-                ClipData.newUri(getContentResolver(), "Network Clipboard Image", uri));
-            return true;
-        } catch (Exception exception) {
-            Log.w(LOG_TAG, "Could not put image into Android clipboard", exception);
-            return false;
-        }
+        boolean ok = ImageClipboardHelper.setImageBase64(this, base64);
+        if (!ok)
+            Log.w(LOG_TAG, "Could not put image into Android clipboard");
+        return ok;
     }
 
     private JSONObject discoveryResponse() throws Exception
