@@ -138,6 +138,26 @@ ApplicationWindow {
         clipboardSyncTimer.restart()
     }
 
+    function cancelForcedServerPreview() {
+        forceNextNetworkText = false
+        waitingForServerText = false
+        serverReadGuardTimer.stop()
+    }
+
+    function shouldIgnoreIncomingImageDuringLocalPublish(incomingFingerprint) {
+        if (!imageSendInFlight && Date.now() >= localPublishGuardUntil)
+            return false
+
+        const expectedFingerprint = pendingAutoSendImageFingerprint.length > 0
+            ? pendingAutoSendImageFingerprint
+            : lastAutoSentImageFingerprint
+        if (expectedFingerprint.length > 0 && incomingFingerprint === expectedFingerprint)
+            return false
+
+        cancelForcedServerPreview()
+        return true
+    }
+
     function isBrowsingHistoryEntry() {
         return currentPreviewHistoryIndex > 0
     }
@@ -1058,7 +1078,6 @@ ApplicationWindow {
         }
 
         function onLatestImageReceived(base64) {
-            localPublishGuardUntil = 0
             const forceUpdate = forceNextNetworkText
             if (!forceUpdate && isBrowsingHistoryEntry()) {
                 addHistoryEntry("image", base64)
@@ -1066,13 +1085,17 @@ ApplicationWindow {
                 return
             }
 
+            const incomingFingerprint = localClipboard.imageFingerprintFromBase64(base64)
+            if (shouldIgnoreIncomingImageDuringLocalPublish(incomingFingerprint))
+                return
+
+            localPublishGuardUntil = 0
             forceNextNetworkText = false
             waitingForServerText = false
             serverReadGuardTimer.stop()
             pendingAutoSendImageFingerprint = ""
             imageSendInFlight = false
 
-            const incomingFingerprint = localClipboard.imageFingerprintFromBase64(base64)
             const alreadyLocalImage = incomingFingerprint.length > 0
                 && (incomingFingerprint === observedLocalImageFingerprint
                     || incomingFingerprint === recentNetworkImageFingerprint
@@ -1101,8 +1124,9 @@ ApplicationWindow {
         }
 
         function onImageSent(fingerprint) {
-            localPublishGuardUntil = 0
+            localPublishGuardUntil = Date.now() + 6000
             lastAutoSentImageFingerprint = fingerprint
+            recentNetworkImageFingerprint = fingerprint
             lastAutoSentText = ""
             if (pendingAutoSendImageFingerprint === fingerprint)
                 pendingAutoSendImageFingerprint = ""

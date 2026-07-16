@@ -27,6 +27,7 @@
 namespace {
 constexpr qint64 ClipboardIgnoreWindowMs = 1500;
 constexpr qint64 RecentImagePublishSuppressMs = 6000;
+constexpr qint64 FreshRemoteEntryWindowSecs = 15;
 
 QByteArray imagePngData(const QImage &sourceImage)
 {
@@ -418,6 +419,9 @@ void TrayController::onClipboardChanged()
 void TrayController::processClipboardChange()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now < m_ignoreClipboardChangesUntil)
+        return;
+
     const QMimeData *mimeData = m_clipboard->mimeData();
 
     if (mimeData && mimeData->hasImage()) {
@@ -430,8 +434,6 @@ void TrayController::processClipboardChange()
             }
 
             const QByteArray hash = imageHash(QImage::fromData(pngData, "PNG"));
-            if (now < m_ignoreClipboardChangesUntil && hash == m_ignoredClipboardImageHash)
-                return;
             if (!m_autoSendEnabled)
                 return;
             if (hash == m_lastPublishedImageHash) {
@@ -454,9 +456,6 @@ void TrayController::processClipboardChange()
     }
 
     const QString text = m_clipboard->text().trimmed();
-    if (now < m_ignoreClipboardChangesUntil && text == m_ignoredClipboardContent)
-        return;
-
     if (!m_autoSendEnabled)
         return;
 
@@ -974,6 +973,54 @@ void TrayController::sendEntryToServer(const ClipboardEntry &entry, bool showSuc
     }
 
     m_sendInFlight = true;
+
+    if (!showSuccessMessage) {
+        QNetworkReply *latestReply = m_network.get(apiRequest(QStringLiteral("/api/clipboard/latest")));
+        connect(latestReply, &QNetworkReply::finished, this, [this, latestReply, entry, showSuccessMessage]() {
+            bool shouldSend = true;
+            if (latestReply->error() == QNetworkReply::NoError) {
+                QJsonParseError parseError;
+                const QJsonDocument document = QJsonDocument::fromJson(latestReply->readAll(), &parseError);
+                if (parseError.error == QJsonParseError::NoError && document.isObject()) {
+                    const ClipboardEntry latest = ClipboardEntry::fromJson(document.object());
+                    const bool freshRemoteEntry = latest.deviceId != m_deviceId
+                        && latest.timestamp > 0
+                        && QDateTime::currentSecsSinceEpoch() - latest.timestamp <= FreshRemoteEntryWindowSecs;
+                    const bool unseenEntry = latest.id.isEmpty() || latest.id != m_lastSeenNetworkEntryId;
+                    if (sameClipboardPayload(entry, latest)) {
+                        m_latestNetworkEntry = latest;
+                        m_lastSeenNetworkEntryId = latest.id;
+                        shouldSend = false;
+                    } else if (freshRemoteEntry && unseenEntry) {
+                        m_latestNetworkEntry = latest;
+                        if (m_networkHistory.isEmpty() || m_networkHistory.first().id != latest.id)
+                            m_networkHistory.prepend(latest);
+                        while (m_networkHistory.size() > 15)
+                            m_networkHistory.removeLast();
+                        if (m_contentWindow && m_contentWindow->isVisible())
+                            updateContentWindow();
+                        applyNetworkEntryToClipboard(latest, false, false);
+                        shouldSend = false;
+                    }
+                }
+            }
+
+            latestReply->deleteLater();
+            if (shouldSend) {
+                postEntryToServer(entry, showSuccessMessage);
+                return;
+            }
+
+            finishSendEntryToServer();
+        });
+        return;
+    }
+
+    postEntryToServer(entry, showSuccessMessage);
+}
+
+void TrayController::postEntryToServer(const ClipboardEntry &entry, bool showSuccessMessage)
+{
     QNetworkReply *reply = m_network.post(apiRequest(QStringLiteral("/api/clipboard")), QJsonDocument(entry.toJson()).toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, this, [this, reply, entry, showSuccessMessage]() {
         if (reply->error() != QNetworkReply::NoError) {
@@ -1005,17 +1052,23 @@ void TrayController::sendEntryToServer(const ClipboardEntry &entry, bool showSuc
                 m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Sent Windows clipboard to server."));
         }
         reply->deleteLater();
-        m_sendInFlight = false;
+        finishSendEntryToServer();
+    });
+}
 
-        if (m_pendingEntry) {
-            const ClipboardEntry pendingEntry = *m_pendingEntry;
-            const bool pendingShowSuccessMessage = m_pendingShowSuccessMessage;
-            m_pendingEntry.reset();
-            m_pendingShowSuccessMessage = false;
-            QTimer::singleShot(0, this, [this, pendingEntry, pendingShowSuccessMessage]() {
-                sendEntryToServer(pendingEntry, pendingShowSuccessMessage);
-            });
-        }
+void TrayController::finishSendEntryToServer()
+{
+    m_sendInFlight = false;
+
+    if (!m_pendingEntry)
+        return;
+
+    const ClipboardEntry pendingEntry = *m_pendingEntry;
+    const bool pendingShowSuccessMessage = m_pendingShowSuccessMessage;
+    m_pendingEntry.reset();
+    m_pendingShowSuccessMessage = false;
+    QTimer::singleShot(0, this, [this, pendingEntry, pendingShowSuccessMessage]() {
+        sendEntryToServer(pendingEntry, pendingShowSuccessMessage);
     });
 }
 

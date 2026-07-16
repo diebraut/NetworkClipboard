@@ -50,6 +50,8 @@ private:
     void setAutoSendEnabled(bool enabled);
     void setMasterServer(bool isMaster);
     void sendEntryToServer(const ClipboardEntry &entry, bool showSuccessMessage);
+    void postEntryToServer(const ClipboardEntry &entry, bool showSuccessMessage);
+    void finishSendEntryToServer();
     void publishClipboardText(const QString &text, bool showSuccessMessage, bool force = false);
     void publishClipboardImage(const QImage &image, bool showSuccessMessage, bool force = false);
     bool tryPublishImageUrl(const QMimeData *mimeData, const QString &text, bool showSuccessMessage, bool force, bool publishTextOnFailure);

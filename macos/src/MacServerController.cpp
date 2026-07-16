@@ -30,6 +30,7 @@
 namespace {
 constexpr quint16 ApiPort = 8787;
 constexpr qint64 ClipboardIgnoreWindowMs = 1500;
+constexpr qint64 FreshRemoteEntryWindowSecs = 15;
 constexpr qsizetype MaxImageBytes = 10 * 1024 * 1024;
 constexpr int MaxNetworkImageEdge = 900;
 constexpr auto LaunchAgentLabel = "de.localtools.NetworkClipboardMacServer";
@@ -344,6 +345,9 @@ void MacServerController::onClipboardChanged()
 void MacServerController::processClipboardChange()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now < m_ignoreClipboardChangesUntil)
+        return;
+
     const QMimeData *mimeData = m_clipboard->mimeData();
 
     if (mimeData) {
@@ -351,8 +355,6 @@ void MacServerController::processClipboardChange()
         const QByteArray pngData = imagePngData(image);
         if (!pngData.isEmpty()) {
             const QByteArray hash = imageHash(QImage::fromData(pngData, "PNG"));
-            if (now < m_ignoreClipboardChangesUntil && hash == m_ignoredClipboardImageHash)
-                return;
             if (!m_autoPublish || hash == m_lastPublishedImageHash)
                 return;
             publishClipboardImage(image, false);
@@ -361,8 +363,6 @@ void MacServerController::processClipboardChange()
     }
 
     const QString text = m_clipboard->text().trimmed();
-    if (now < m_ignoreClipboardChangesUntil && text == m_ignoredClipboardContent)
-        return;
     if (!m_autoPublish || text.isEmpty() || text == m_lastPublishedContent)
         return;
 
@@ -559,9 +559,20 @@ void MacServerController::publishClipboardText(const QString &text, bool showMes
         return;
     }
 
+    const std::optional<ClipboardEntry> latest = m_store.latest();
+    if (!force
+        && !showMessage
+        && latest
+        && latest->deviceId != m_deviceId
+        && latest->timestamp > 0
+        && QDateTime::currentSecsSinceEpoch() - latest->timestamp <= FreshRemoteEntryWindowSecs
+        && !sameClipboardPayload(entry, *latest)) {
+        applyEntryToClipboard(*latest, false, false);
+        return;
+    }
+
     m_lastPublishedContent = text;
     m_lastPublishedImageHash.clear();
-    const std::optional<ClipboardEntry> latest = m_store.latest();
     if (!latest || !sameClipboardPayload(entry, *latest))
         m_store.setLatest(entry);
     if (showMessage)
@@ -597,9 +608,20 @@ void MacServerController::publishClipboardImage(const QImage &image, bool showMe
         return;
     }
 
+    const std::optional<ClipboardEntry> latest = m_store.latest();
+    if (!force
+        && !showMessage
+        && latest
+        && latest->deviceId != m_deviceId
+        && latest->timestamp > 0
+        && QDateTime::currentSecsSinceEpoch() - latest->timestamp <= FreshRemoteEntryWindowSecs
+        && !sameClipboardPayload(entry, *latest)) {
+        applyEntryToClipboard(*latest, false, false);
+        return;
+    }
+
     m_lastPublishedImageHash = hash;
     m_lastPublishedContent.clear();
-    const std::optional<ClipboardEntry> latest = m_store.latest();
     if (!latest || !sameClipboardPayload(entry, *latest))
         m_store.setLatest(entry);
     if (showMessage)
