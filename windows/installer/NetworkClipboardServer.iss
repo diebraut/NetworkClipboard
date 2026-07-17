@@ -26,7 +26,9 @@ ArchitecturesInstallIn64BitMode=x64
 Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Run]
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM {#MyTrayExeName}"; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "stop {#MyServiceName}"; Flags: runhidden waituntilterminated
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM {#MyAppExeName}"; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "delete {#MyServiceName}"; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "create {#MyServiceName} binPath= ""{app}\{#MyAppExeName}"" start= auto DisplayName= ""{#MyAppName}"""; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "description {#MyServiceName} ""Local LAN clipboard HTTP server on port 8787."""; Flags: runhidden waituntilterminated
@@ -38,7 +40,9 @@ Filename: "{sys}\sc.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden
 Filename: "{app}\{#MyTrayExeName}"; StatusMsg: "Starting Network Clipboard tray agent..."; Flags: nowait runasoriginaluser skipifdoesntexist
 
 [UninstallRun]
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM {#MyTrayExeName}"; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "stop {#MyServiceName}"; Flags: runhidden waituntilterminated
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM {#MyAppExeName}"; Flags: runhidden waituntilterminated
 Filename: "{sys}\sc.exe"; Parameters: "delete {#MyServiceName}"; Flags: runhidden waituntilterminated
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Network Clipboard Server"""; Flags: runhidden waituntilterminated
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Network Clipboard Discovery"""; Flags: runhidden waituntilterminated

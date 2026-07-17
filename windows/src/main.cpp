@@ -72,6 +72,13 @@ int main(int argc, char *argv[])
 
     TrayController tray(deviceId, deviceName);
     tray.setServerInfo(serverUrl, port, token);
+    const QString localServiceExecutable = QDir(QCoreApplication::applicationDirPath())
+                                               .filePath(QStringLiteral("NetworkClipboardService.exe"));
+    if (QFileInfo::exists(localServiceExecutable)
+        && QDir::cleanPath(QCoreApplication::applicationDirPath()).compare(
+               QDir::cleanPath(QStringLiteral(NETWORKCLIPBOARD_BUILD_DIR)), Qt::CaseInsensitive) == 0) {
+        tray.setDevelopmentServiceExecutable(localServiceExecutable);
+    }
     tray.show();
 
     return app.exec();

@@ -36,3 +36,7 @@ open build-macos/NetworkClipboardMacServer.app
 
 The app stores its token and device id with `QSettings` under organization
 `LocalTools` and application `NetworkClipboardMacServer`.
+
+Clipboard history is stored atomically in the application's writable data
+directory. Up to 100 entries and 32 MB of encoded content are restored when the
+server restarts. Clearing the history also clears the persisted file.

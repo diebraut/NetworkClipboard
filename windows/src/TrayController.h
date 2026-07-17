@@ -20,6 +20,7 @@ class QClipboard;
 class QImage;
 class QMenu;
 class QMimeData;
+class QProcess;
 
 class TrayController : public QObject
 {
@@ -27,9 +28,11 @@ class TrayController : public QObject
 
 public:
     TrayController(const QString &deviceId, const QString &deviceName, QObject *parent = nullptr);
+    ~TrayController() override;
 
     void show();
     void setServerInfo(const QUrl &serverUrl, quint16 port, const QString &token);
+    void setDevelopmentServiceExecutable(const QString &executablePath);
 
 private:
     void onClipboardChanged();
@@ -45,6 +48,7 @@ private:
     void pasteFromNetwork();
     void copyServerInfo();
     void startServerServiceIfNeeded();
+    bool stopDevelopmentService();
     void toggleServerService();
     void updateServiceStatus();
     void setAutoSendEnabled(bool enabled);
@@ -66,6 +70,7 @@ private:
     QNetworkAccessManager m_network;
     QTimer m_pollTimer;
     QTimer m_clipboardChangeTimer;
+    QProcess *m_developmentServiceProcess = nullptr;
     QSystemTrayIcon m_tray;
     QMenu *m_menu = nullptr;
     ClipboardContentWindow *m_contentWindow = nullptr;
@@ -75,6 +80,7 @@ private:
     QString m_deviceId;
     QString m_deviceName;
     QString m_token;
+    QString m_developmentServiceExecutable;
     QUrl m_serverUrl;
     quint16 m_port = 8787;
     bool m_autoSendEnabled = true;

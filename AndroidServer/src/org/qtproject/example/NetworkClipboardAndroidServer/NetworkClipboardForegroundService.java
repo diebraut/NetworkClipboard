@@ -19,6 +19,7 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.util.AtomicFile;
 import android.util.Base64;
 import android.util.Log;
 
@@ -27,6 +28,9 @@ import org.json.JSONObject;
 import org.qtproject.qt.android.bindings.QtActivity;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.DatagramPacket;
@@ -42,6 +46,7 @@ import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 
 public class NetworkClipboardForegroundService extends Service
 {
@@ -53,6 +58,8 @@ public class NetworkClipboardForegroundService extends Service
     private static final int MAX_TEXT_BYTES = 1024 * 1024;
     private static final int MAX_IMAGE_BYTES = 10 * 1024 * 1024;
     private static final int MAX_REQUEST_BODY_BYTES = 14 * 1024 * 1024;
+    private static final int MAX_HISTORY_CONTENT_CHARS = 32 * 1024 * 1024;
+    private static final int MAX_HISTORY_ITEMS = 100;
     private static final String DISCOVERY_REQUEST = "NETWORK_CLIPBOARD_DISCOVER_V1";
     private static final String SETTINGS_NAME = "network_clipboard_server";
 
@@ -65,6 +72,7 @@ public class NetworkClipboardForegroundService extends Service
     private volatile String deviceName = "Android Server";
     private volatile boolean isMaster;
     private JSONObject latestEntry;
+    private AtomicFile historyFile;
     private ServerSocket serverSocket;
     private DatagramSocket discoverySocket;
     private PowerManager.WakeLock wakeLock;
@@ -109,6 +117,8 @@ public class NetworkClipboardForegroundService extends Service
     {
         super.onCreate();
         instance = this;
+        historyFile = new AtomicFile(new File(getFilesDir(), "NetworkClipboardHistory.json"));
+        loadHistory();
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, createNotification());
         acquireWakeLock();
@@ -304,6 +314,7 @@ public class NetworkClipboardForegroundService extends Service
             byte[] body = readBody(input, contentLength);
             if ("POST".equals(method) && "/api/clipboard".equals(path)) {
                 JSONObject entry = new JSONObject(new String(body, StandardCharsets.UTF_8));
+                normalizeEntry(entry);
                 String validationError = validateEntry(entry);
                 if (validationError != null) {
                     sendError(connection, 400, validationError);
@@ -339,6 +350,7 @@ public class NetworkClipboardForegroundService extends Service
                 synchronized (entryLock) {
                     history.clear();
                     latestEntry = null;
+                    saveHistoryLocked();
                 }
                 sendJson(connection, 200, new JSONObject().put("ok", true));
                 return;
@@ -403,13 +415,25 @@ public class NetworkClipboardForegroundService extends Service
         return null;
     }
 
+    private void normalizeEntry(JSONObject entry) throws Exception
+    {
+        if (entry.optString("id", "").isEmpty())
+            entry.put("id", UUID.randomUUID().toString());
+        if (entry.optLong("timestamp", 0) <= 0)
+            entry.put("timestamp", System.currentTimeMillis() / 1000L);
+        if (entry.optString("type", "").isEmpty())
+            entry.put("type", "text");
+    }
+
     private void storeEntry(JSONObject entry, boolean applyToClipboard)
     {
         synchronized (entryLock) {
-            latestEntry = entry;
-            history.add(0, entry);
-            while (history.size() > 100)
-                history.remove(history.size() - 1);
+            if (history.isEmpty() || !samePayload(history.get(0), entry)) {
+                history.add(0, entry);
+                pruneHistoryLocked();
+                latestEntry = history.get(0);
+                saveHistoryLocked();
+            }
         }
 
         if (applyToClipboard) {
@@ -422,6 +446,83 @@ public class NetworkClipboardForegroundService extends Service
                     (ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE);
                 clipboard.setPrimaryClip(ClipData.newPlainText("Network Clipboard", content));
             }
+        }
+    }
+
+    private boolean samePayload(JSONObject left, JSONObject right)
+    {
+        return left.optString("type", "text").equals(right.optString("type", "text"))
+            && left.optString("mimeType", "").equals(right.optString("mimeType", ""))
+            && left.optString("content", "").equals(right.optString("content", ""));
+    }
+
+    private void pruneHistoryLocked()
+    {
+        long storedContentSize = 0;
+        int retainedItems = 0;
+        for (JSONObject item : history) {
+            storedContentSize += item.optString("content", "").length();
+            ++retainedItems;
+            if (retainedItems >= MAX_HISTORY_ITEMS
+                || storedContentSize > MAX_HISTORY_CONTENT_CHARS) {
+                break;
+            }
+        }
+        while (history.size() > retainedItems)
+            history.remove(history.size() - 1);
+    }
+
+    private void loadHistory()
+    {
+        synchronized (entryLock) {
+            history.clear();
+            latestEntry = null;
+            try (FileInputStream input = historyFile.openRead();
+                 ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
+                byte[] buffer = new byte[8192];
+                int count;
+                while ((count = input.read(buffer)) >= 0)
+                    bytes.write(buffer, 0, count);
+
+                JSONObject document = new JSONObject(
+                    new String(bytes.toByteArray(), StandardCharsets.UTF_8));
+                JSONArray items = document.optJSONArray("items");
+                if (items == null)
+                    return;
+
+                for (int index = 0; index < items.length(); ++index) {
+                    JSONObject entry = items.optJSONObject(index);
+                    if (entry != null) {
+                        normalizeEntry(entry);
+                        if (validateEntry(entry) == null)
+                            history.add(entry);
+                    }
+                }
+                pruneHistoryLocked();
+                if (!history.isEmpty())
+                    latestEntry = history.get(0);
+            } catch (Exception exception) {
+                Log.i(LOG_TAG, "No valid persisted clipboard history available", exception);
+            }
+        }
+    }
+
+    private void saveHistoryLocked()
+    {
+        JSONArray items = new JSONArray();
+        for (JSONObject entry : history)
+            items.put(entry);
+
+        FileOutputStream output = null;
+        try {
+            output = historyFile.startWrite();
+            output.write(new JSONObject().put("items", items).toString()
+                .getBytes(StandardCharsets.UTF_8));
+            historyFile.finishWrite(output);
+        } catch (Exception exception) {
+            if (output != null)
+                historyFile.failWrite(output);
+            Log.e(LOG_TAG, "Could not persist clipboard history", exception);
         }
     }
 

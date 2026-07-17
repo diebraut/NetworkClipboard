@@ -67,6 +67,10 @@ The installer also adds a Windows Firewall rule for TCP port `8787`.
 
 The installer also installs `NetworkClipboardWindows.exe` as the user's startup tray agent. This tray agent watches the interactive Windows clipboard and sends text/URLs to the service.
 
+During installation and uninstallation, running tray agents and console/service
+processes are stopped first. This prevents a Qt build process from keeping port
+`8787` occupied while the installed Windows service is started.
+
 ## Console test
 
 Before building an installer, you can test the service executable manually:

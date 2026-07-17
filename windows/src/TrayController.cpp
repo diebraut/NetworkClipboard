@@ -382,6 +382,11 @@ TrayController::TrayController(const QString &deviceId, const QString &deviceNam
     updateServiceStatus();
 }
 
+TrayController::~TrayController()
+{
+    stopDevelopmentService();
+}
+
 void TrayController::show()
 {
     m_tray.show();
@@ -395,6 +400,21 @@ void TrayController::setServerInfo(const QUrl &serverUrl, quint16 port, const QS
     QTimer::singleShot(1000, this, &TrayController::pollLatestFromServer);
     QTimer::singleShot(1200, this, &TrayController::fetchClipboardHistory);
     scheduleCurrentClipboardPublish(false);
+}
+
+void TrayController::setDevelopmentServiceExecutable(const QString &executablePath)
+{
+    m_developmentServiceExecutable = executablePath;
+    m_serviceRunning = false;
+    if (m_serviceAction)
+        m_serviceAction->setText(QStringLiteral("Start Qt Build Server"));
+    m_developmentServiceProcess = new QProcess(this);
+    m_developmentServiceProcess->setProgram(m_developmentServiceExecutable);
+    m_developmentServiceProcess->setArguments({QStringLiteral("--console")});
+    m_developmentServiceProcess->setStandardOutputFile(QProcess::nullDevice());
+    m_developmentServiceProcess->setStandardErrorFile(QProcess::nullDevice());
+    connect(m_developmentServiceProcess, &QProcess::stateChanged,
+            this, [this]() { updateServiceStatus(); });
 }
 
 void TrayController::onClipboardChanged()
@@ -583,6 +603,7 @@ void TrayController::showContent()
 {
     if (!m_contentWindow) {
         m_contentWindow = new ClipboardContentWindow();
+        connect(m_contentWindow, &QObject::destroyed, this, [this]() { m_contentWindow = nullptr; });
         connect(m_contentWindow, &ClipboardContentWindow::makeCurrentRequested, this, [this](ClipboardEntry entry) {
             entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
             entry.deviceId = m_deviceId;
@@ -594,7 +615,8 @@ void TrayController::showContent()
 
     updateContentWindow();
 
-    m_contentWindow->show();
+    m_contentWindow->setWindowState((m_contentWindow->windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
+    m_contentWindow->showNormal();
     m_contentWindow->raise();
     m_contentWindow->activateWindow();
 
@@ -917,6 +939,31 @@ void TrayController::copyServerInfo()
 
 void TrayController::startServerServiceIfNeeded()
 {
+    if (m_developmentServiceProcess) {
+        if (m_developmentServiceProcess->state() != QProcess::NotRunning) {
+            updateServiceStatus();
+            return;
+        }
+
+        if (isServiceRunning()) {
+            if (!runServiceCommand(QStringLiteral("stop")))
+                runElevatedServiceCommand(QStringLiteral("stop"));
+            QTimer::singleShot(3000, this, &TrayController::startServerServiceIfNeeded);
+            return;
+        }
+
+        m_developmentServiceProcess->start();
+        if (!m_developmentServiceProcess->waitForStarted(2000)) {
+            updateServiceStatus();
+            m_tray.showMessage(QStringLiteral("Network Clipboard"),
+                               QStringLiteral("Could not start Qt build server: %1")
+                                   .arg(m_developmentServiceProcess->errorString()));
+            return;
+        }
+        QTimer::singleShot(750, this, &TrayController::updateServiceStatus);
+        return;
+    }
+
     if (isServiceRunning()) {
         updateServiceStatus();
         return;
@@ -931,12 +978,47 @@ void TrayController::startServerServiceIfNeeded()
         if (m_serviceRunning) {
             pollLatestFromServer();
             fetchClipboardHistory();
+            scheduleCurrentClipboardPublish(true);
         }
     });
 }
 
+bool TrayController::stopDevelopmentService()
+{
+    if (!m_developmentServiceProcess
+        || m_developmentServiceProcess->state() == QProcess::NotRunning) {
+        return true;
+    }
+
+    m_developmentServiceProcess->terminate();
+    if (!m_developmentServiceProcess->waitForFinished(1500)) {
+        m_developmentServiceProcess->kill();
+        m_developmentServiceProcess->waitForFinished(1500);
+    }
+
+    updateServiceStatus();
+    return m_developmentServiceProcess->state() == QProcess::NotRunning;
+}
+
 void TrayController::toggleServerService()
 {
+    if (m_developmentServiceProcess) {
+        if (m_developmentServiceProcess->state() == QProcess::NotRunning) {
+            startServerServiceIfNeeded();
+            m_tray.showMessage(QStringLiteral("Network Clipboard"),
+                               QStringLiteral("Starting Qt build server."));
+        } else {
+            const bool stopped = stopDevelopmentService();
+            m_tray.showMessage(
+                QStringLiteral("Network Clipboard"),
+                stopped
+                    ? QStringLiteral("Qt build server stopped.")
+                    : QStringLiteral("Could not stop Qt build server."));
+        }
+        updateServiceStatus();
+        return;
+    }
+
     const QString command = m_serviceRunning ? QStringLiteral("stop") : QStringLiteral("start");
     if (!runElevatedServiceCommand(command)) {
         m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Could not request service state change."));
@@ -951,7 +1033,9 @@ void TrayController::toggleServerService()
 
 void TrayController::updateServiceStatus()
 {
-    const bool running = isServiceRunning();
+    const bool running = m_developmentServiceProcess
+        ? m_developmentServiceProcess->state() != QProcess::NotRunning
+        : isServiceRunning();
     const bool serviceStarted = !m_serviceRunning && running;
     if (m_serviceRunning == running && m_serviceAction)
         return;
@@ -960,13 +1044,20 @@ void TrayController::updateServiceStatus()
     if (!m_serviceAction)
         return;
 
-    m_serviceAction->setText(m_serviceRunning
-                                 ? QStringLiteral("Stop Server Service")
-                                 : QStringLiteral("Start Server Service"));
+    if (m_developmentServiceProcess) {
+        m_serviceAction->setText(m_serviceRunning
+                                     ? QStringLiteral("Stop Qt Build Server")
+                                     : QStringLiteral("Start Qt Build Server"));
+    } else {
+        m_serviceAction->setText(m_serviceRunning
+                                     ? QStringLiteral("Stop Server Service")
+                                     : QStringLiteral("Start Server Service"));
+    }
 
     if (serviceStarted) {
         QTimer::singleShot(250, this, &TrayController::pollLatestFromServer);
         QTimer::singleShot(500, this, &TrayController::fetchClipboardHistory);
+        scheduleCurrentClipboardPublish(true);
     }
 }
 
