@@ -47,6 +47,9 @@ private:
     void sendCurrentClipboard();
     void pasteFromNetwork();
     void copyServerInfo();
+    void broadcastServerOffline();
+    void broadcastServerOnline();
+    void broadcastServerPresence(const QString &event, bool agentActive);
     void startServerServiceIfNeeded();
     bool stopDevelopmentService();
     void toggleServerService();
@@ -86,6 +89,7 @@ private:
     bool m_autoSendEnabled = true;
     bool m_isMaster = true;
     bool m_serviceRunning = false;
+    bool m_onlineBroadcastSent = false;
     qint64 m_ignoreClipboardChangesUntil = 0;
     QString m_ignoredClipboardContent;
     QByteArray m_ignoredClipboardImageHash;

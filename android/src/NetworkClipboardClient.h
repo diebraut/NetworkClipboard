@@ -91,6 +91,7 @@ private:
                              const std::function<void(const QString &serverUrl)> &action,
                              const std::function<void()> &failureAction = {});
     void handleDiscoveryResponse();
+    void handleServerOffline(const QJsonObject &object, const QString &fallbackUrl);
     void startInitialServerDiscovery();
     void acquireMulticastLock();
     bool sendDiscoveryDatagrams();

@@ -160,6 +160,7 @@ public class NetworkClipboardForegroundService extends Service
     @Override
     public void onDestroy()
     {
+        broadcastPresence("serverOffline", false);
         running = false;
         closeSockets();
         if (wakeLock != null && wakeLock.isHeld())
@@ -193,6 +194,7 @@ public class NetworkClipboardForegroundService extends Service
         try {
             serverSocket = new ServerSocket(API_PORT);
             serverSocket.setReuseAddress(true);
+            broadcastPresence("serverOnline", true);
             while (running) {
                 Socket socket = serverSocket.accept();
                 new Thread(() -> handleConnection(socket), "NetworkClipboardRequest").start();
@@ -555,6 +557,41 @@ public class NetworkClipboardForegroundService extends Service
                 .put("text")
                 .put("url")
                 .put("image"));
+    }
+
+    private void broadcastPresence(String event, boolean agentActive)
+    {
+        if (!running)
+            return;
+
+        try (DatagramSocket broadcaster = new DatagramSocket()) {
+            JSONObject message = discoveryResponse()
+                .put("event", event)
+                .put("agentActive", agentActive);
+            byte[] payload = message.toString().getBytes(StandardCharsets.UTF_8);
+            List<InetAddress> broadcasts = new ArrayList<>();
+            broadcasts.add(InetAddress.getByName("255.255.255.255"));
+            for (NetworkInterface networkInterface
+                    : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                if (!networkInterface.isUp() || networkInterface.isLoopback())
+                    continue;
+                for (java.net.InterfaceAddress address : networkInterface.getInterfaceAddresses()) {
+                    InetAddress broadcast = address.getBroadcast();
+                    if (broadcast != null && !broadcasts.contains(broadcast))
+                        broadcasts.add(broadcast);
+                }
+            }
+
+            broadcaster.setBroadcast(true);
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                for (InetAddress broadcast : broadcasts) {
+                    broadcaster.send(new DatagramPacket(
+                        payload, payload.length, broadcast, DISCOVERY_PORT));
+                }
+            }
+        } catch (Exception exception) {
+            Log.w(LOG_TAG, "Could not broadcast server shutdown", exception);
+        }
     }
 
     private List<String> serverUrls()

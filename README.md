@@ -36,3 +36,14 @@ Authorization: Bearer <token>
 ```
 
 The Windows app creates a token on first start and stores it via `QSettings`.
+
+## Server presence
+
+Discovery uses UDP port `8788`. Servers broadcast their normal discovery
+identity with `event` set to `serverOnline` after startup and `serverOffline` on
+an orderly service or tray shutdown. The `agentActive` field distinguishes a
+listening Windows service from the fully active tray/service combination.
+Clients update the matching token or URL immediately and can switch servers
+without waiting for HTTP timeouts. Polling remains the fallback for crashes,
+forced termination, power loss, and network interruption, where no shutdown
+packet can be sent.

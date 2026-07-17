@@ -117,6 +117,12 @@ NetworkClipboardClient::NetworkClipboardClient(QObject *parent)
     : QObject(parent)
 {
     connect(&m_discoverySocket, &QUdpSocket::readyRead, this, &NetworkClipboardClient::handleDiscoveryResponse);
+    if (!m_discoverySocket.bind(QHostAddress::AnyIPv4,
+                                DiscoveryPort,
+                                QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint)) {
+        qWarning() << "NetworkClipboardIOS: could not listen for UDP presence events:"
+                   << m_discoverySocket.errorString();
+    }
     loadSavedServer();
     m_serverCheckTimer.setInterval(5000);
     connect(&m_serverCheckTimer, &QTimer::timeout, this, &NetworkClipboardClient::checkKnownServers);
@@ -609,7 +615,9 @@ void NetworkClipboardClient::connectToServerUrl(const QString &serverUrl)
 bool NetworkClipboardClient::sendDiscoveryDatagrams()
 {
     if (m_discoverySocket.state() == QAbstractSocket::UnconnectedState
-        && !m_discoverySocket.bind(QHostAddress::AnyIPv4, 0)) {
+        && !m_discoverySocket.bind(QHostAddress::AnyIPv4,
+                                   DiscoveryPort,
+                                   QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint)) {
         qWarning() << "NetworkClipboardIOS: could not bind UDP discovery socket:"
                    << m_discoverySocket.errorString();
         return false;
@@ -780,7 +788,85 @@ void NetworkClipboardClient::handleDiscoveryResponse()
             continue;
 
         const QString fallbackUrl = QStringLiteral("http://%1:%2").arg(datagram.senderAddress().toString()).arg(ApiPort);
+        if (object.value(QStringLiteral("event")).toString() == QStringLiteral("serverOffline")) {
+            handleServerOffline(object, fallbackUrl);
+            continue;
+        }
         addDiscoveredServer(object, fallbackUrl);
+    }
+}
+
+void NetworkClipboardClient::handleServerOffline(const QJsonObject &object, const QString &fallbackUrl)
+{
+    const QString offlineToken = object.value(QStringLiteral("token")).toString();
+    QSet<QString> offlineUrls;
+    const auto addUrl = [&offlineUrls](const QString &value) {
+        const QString normalized = endpointServerUrl(QUrl(value));
+        if (!normalized.isEmpty())
+            offlineUrls.insert(normalized);
+    };
+    addUrl(object.value(QStringLiteral("url")).toString());
+    for (const QJsonValue &value : object.value(QStringLiteral("urls")).toArray())
+        addUrl(value.toString());
+    addUrl(fallbackUrl);
+
+    bool changed = false;
+    bool selectedServerStopped = false;
+    QSet<QString> stoppedServerUrls;
+    for (int index = 0; index < m_servers.size(); ++index) {
+        QVariantMap server = m_servers.at(index).toMap();
+        const bool tokenMatches = !offlineToken.isEmpty()
+            && server.value(QStringLiteral("token")).toString() == offlineToken;
+        const bool urlMatches = offlineUrls.contains(
+            endpointServerUrl(QUrl(server.value(QStringLiteral("url")).toString())));
+        if (!tokenMatches && !urlMatches)
+            continue;
+
+        stoppedServerUrls.insert(endpointServerUrl(
+            QUrl(server.value(QStringLiteral("url")).toString())));
+        selectedServerStopped = selectedServerStopped || index == m_selectedServerIndex;
+        if (server.value(QStringLiteral("active")).toBool()) {
+            server.insert(QStringLiteral("active"), false);
+            m_servers[index] = server;
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        emit serversChanged();
+        saveKnownServers();
+    }
+    for (QNetworkReply *reply : m_network.findChildren<QNetworkReply *>()) {
+        if (stoppedServerUrls.contains(endpointServerUrl(reply->url())))
+            reply->abort();
+    }
+    if (!selectedServerStopped)
+        return;
+
+    m_missedServerChecks = 3;
+    setServerActive(false);
+    setStatus(QStringLiteral("Server wurde beendet: %1").arg(m_serverName));
+
+    int mainServerIndex = -1;
+    int firstActiveIndex = -1;
+    for (int index = 0; index < m_servers.size(); ++index) {
+        const QVariantMap server = m_servers.at(index).toMap();
+        if (!server.value(QStringLiteral("active")).toBool())
+            continue;
+        if (firstActiveIndex < 0)
+            firstActiveIndex = index;
+        if (server.value(QStringLiteral("main")).toBool()) {
+            mainServerIndex = index;
+            break;
+        }
+    }
+
+    const int targetIndex = mainServerIndex >= 0 ? mainServerIndex : firstActiveIndex;
+    if (targetIndex >= 0) {
+        activateServer(targetIndex);
+    } else {
+        sendDiscoveryDatagrams();
+        QTimer::singleShot(100, this, &NetworkClipboardClient::checkKnownServers);
     }
 }
 

@@ -17,6 +17,7 @@ class ApiServer : public QObject
 
 public:
     explicit ApiServer(ClipboardStore *store, QObject *parent = nullptr);
+    ~ApiServer() override;
 
     bool start(quint16 port, const QString &token, QString *errorMessage = nullptr);
     quint16 port() const;
@@ -40,6 +41,7 @@ private:
     void sendBytes(QTcpSocket *socket, int statusCode, const QByteArray &contentType, const QByteArray &body) const;
     void sendError(QTcpSocket *socket, int statusCode, const QString &message) const;
     QJsonObject discoveryResponse(const QStringList &urls) const;
+    void broadcastPresence(const QString &event, bool agentActive);
     bool isAgentActive() const;
 
     ClipboardStore *m_store = nullptr;

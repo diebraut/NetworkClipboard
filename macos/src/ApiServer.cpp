@@ -7,6 +7,8 @@
 #include <QNetworkInterface>
 #include <QTcpSocket>
 
+#include <utility>
+
 namespace {
 constexpr quint16 DiscoveryPort = 8788;
 constexpr auto DiscoveryRequest = "NETWORK_CLIPBOARD_DISCOVER_V1";
@@ -117,6 +119,11 @@ ApiServer::ApiServer(ClipboardStore *store, QObject *parent)
     connect(&m_discoverySocket, &QUdpSocket::readyRead, this, &ApiServer::handleDiscoveryDatagram);
 }
 
+ApiServer::~ApiServer()
+{
+    broadcastPresence(QStringLiteral("serverOffline"), false);
+}
+
 bool ApiServer::start(quint16 port, const QString &token, const QString &serverName, QString *errorMessage)
 {
     m_token = token;
@@ -133,6 +140,8 @@ bool ApiServer::start(quint16 port, const QString &token, const QString &serverN
     if (m_discoverySocket.state() != QAbstractSocket::BoundState) {
         m_discoverySocket.bind(QHostAddress::AnyIPv4, DiscoveryPort, QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint);
     }
+
+    broadcastPresence(QStringLiteral("serverOnline"), true);
 
     return true;
 }
@@ -375,6 +384,40 @@ QJsonObject ApiServer::discoveryResponse(const QStringList &urls) const
          }},
         {QStringLiteral("maxImageBytes"), MaxImageBytes}
     };
+}
+
+void ApiServer::broadcastPresence(const QString &event, bool agentActive)
+{
+    if (m_token.isEmpty() || !m_server.isListening())
+        return;
+
+    const QStringList urls = localServerUrls(m_server.serverPort() > 0 ? m_server.serverPort() : 8787);
+    QJsonObject message = discoveryResponse(urls);
+    message.insert(QStringLiteral("event"), event);
+    message.insert(QStringLiteral("agentActive"), agentActive);
+    const QByteArray payload = QJsonDocument(message).toJson(QJsonDocument::Compact);
+
+    QList<QHostAddress> broadcasts{QHostAddress::Broadcast};
+    for (const QNetworkInterface &networkInterface : QNetworkInterface::allInterfaces()) {
+        const auto flags = networkInterface.flags();
+        if (!flags.testFlag(QNetworkInterface::IsUp)
+            || !flags.testFlag(QNetworkInterface::IsRunning)
+            || flags.testFlag(QNetworkInterface::IsLoopBack)) {
+            continue;
+        }
+        for (const QNetworkAddressEntry &entry : networkInterface.addressEntries()) {
+            const QHostAddress address = entry.broadcast();
+            if (address.protocol() == QAbstractSocket::IPv4Protocol
+                && !address.isNull()
+                && !broadcasts.contains(address)) {
+                broadcasts.append(address);
+            }
+        }
+    }
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        for (const QHostAddress &broadcast : std::as_const(broadcasts))
+            m_discoverySocket.writeDatagram(payload, broadcast, DiscoveryPort);
+    }
 }
 
 bool ApiServer::parseRequest(const QByteArray &raw, HttpRequest *request, QString *errorMessage) const

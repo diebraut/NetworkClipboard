@@ -22,6 +22,7 @@
 #include <QRegularExpression>
 #include <QStyle>
 #include <QSettings>
+#include <QUdpSocket>
 #include <QUuid>
 
 namespace {
@@ -384,6 +385,7 @@ TrayController::TrayController(const QString &deviceId, const QString &deviceNam
 
 TrayController::~TrayController()
 {
+    broadcastServerOffline();
     stopDevelopmentService();
 }
 
@@ -596,7 +598,13 @@ void TrayController::sendAgentHeartbeat()
     QNetworkReply *reply = m_network.post(
         apiRequest(QStringLiteral("/api/agent/heartbeat")),
         QJsonDocument(heartbeat).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (reply->error() == QNetworkReply::NoError && !m_onlineBroadcastSent) {
+            m_onlineBroadcastSent = true;
+            broadcastServerOnline();
+        }
+        reply->deleteLater();
+    });
 }
 
 void TrayController::showContent()
@@ -937,6 +945,62 @@ void TrayController::copyServerInfo()
     m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Server info copied to clipboard."));
 }
 
+void TrayController::broadcastServerOffline()
+{
+    broadcastServerPresence(QStringLiteral("serverOffline"), false);
+}
+
+void TrayController::broadcastServerOnline()
+{
+    broadcastServerPresence(QStringLiteral("serverOnline"), true);
+}
+
+void TrayController::broadcastServerPresence(const QString &event, bool agentActive)
+{
+    if (m_token.isEmpty() || !m_serviceRunning)
+        return;
+
+    const QStringList urls = localServerUrls(m_port);
+    QJsonArray urlArray;
+    for (const QString &url : urls)
+        urlArray.append(url);
+    const QJsonObject message{
+        {QStringLiteral("service"), QStringLiteral("NetworkClipboard")},
+        {QStringLiteral("event"), event},
+        {QStringLiteral("serverName"), m_deviceName},
+        {QStringLiteral("url"), urls.value(0)},
+        {QStringLiteral("urls"), urlArray},
+        {QStringLiteral("token"), m_token},
+        {QStringLiteral("isMaster"), m_isMaster},
+        {QStringLiteral("agentActive"), agentActive}
+    };
+    const QByteArray payload = QJsonDocument(message).toJson(QJsonDocument::Compact);
+
+    QList<QHostAddress> broadcasts{QHostAddress::Broadcast};
+    for (const QNetworkInterface &networkInterface : QNetworkInterface::allInterfaces()) {
+        const auto flags = networkInterface.flags();
+        if (!flags.testFlag(QNetworkInterface::IsUp)
+            || !flags.testFlag(QNetworkInterface::IsRunning)
+            || flags.testFlag(QNetworkInterface::IsLoopBack)) {
+            continue;
+        }
+        for (const QNetworkAddressEntry &entry : networkInterface.addressEntries()) {
+            const QHostAddress address = entry.broadcast();
+            if (address.protocol() == QAbstractSocket::IPv4Protocol
+                && !address.isNull()
+                && !broadcasts.contains(address)) {
+                broadcasts.append(address);
+            }
+        }
+    }
+
+    QUdpSocket socket;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        for (const QHostAddress &broadcast : broadcasts)
+            socket.writeDatagram(payload, broadcast, 8788);
+    }
+}
+
 void TrayController::startServerServiceIfNeeded()
 {
     if (m_developmentServiceProcess) {
@@ -1041,6 +1105,8 @@ void TrayController::updateServiceStatus()
         return;
 
     m_serviceRunning = running;
+    if (!m_serviceRunning)
+        m_onlineBroadcastSent = false;
     if (!m_serviceAction)
         return;
 
@@ -1055,6 +1121,7 @@ void TrayController::updateServiceStatus()
     }
 
     if (serviceStarted) {
+        QTimer::singleShot(100, this, &TrayController::sendAgentHeartbeat);
         QTimer::singleShot(250, this, &TrayController::pollLatestFromServer);
         QTimer::singleShot(500, this, &TrayController::fetchClipboardHistory);
         scheduleCurrentClipboardPublish(true);

@@ -85,6 +85,7 @@ private:
     QNetworkRequest discoveryRequest(const QString &serverUrl) const;
     void withAvailableServer(const QString &actionStatus, const std::function<void(const QString &serverUrl)> &action);
     void handleDiscoveryResponse();
+    void handleServerOffline(const QJsonObject &object, const QString &fallbackUrl);
     void startInitialServerDiscovery();
     bool sendDiscoveryDatagrams();
     void probeDiscoveryUrl(const QUrl &url, bool networkScan = false);
