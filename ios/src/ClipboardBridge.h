@@ -3,6 +3,7 @@
 #include <QImage>
 #include <QObject>
 #include <QString>
+#include <QVariantList>
 
 class ClipboardBridge : public QObject
 {
@@ -29,6 +30,9 @@ public:
     Q_INVOKABLE bool setImageBase64(const QString &base64);
     Q_INVOKABLE QString setPreviewImageBase64(const QString &base64);
     Q_INVOKABLE void clearPreviewImage();
+    Q_INVOKABLE void loadRecentPhotos(int maxCount = 30);
+    Q_INVOKABLE void loadPhotoContent(const QString &assetId);
+    Q_INVOKABLE void openCamera();
     Q_INVOKABLE void markPasteSettingsOfferSeen();
     Q_INVOKABLE void openAppSettings() const;
 
@@ -37,6 +41,11 @@ public:
 signals:
     void textChanged();
     void clipboardChanged();
+    void recentPhotosLoaded(const QVariantList &photos);
+    void photoContentLoaded(const QString &assetId, const QString &base64);
+    void cameraImageProcessingStarted();
+    void cameraImageCaptured(const QString &base64);
+    void cameraCaptureFailed(const QString &message);
     void pasteSettingsOfferChanged();
 
 private:

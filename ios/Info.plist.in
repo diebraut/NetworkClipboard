@@ -38,8 +38,17 @@
     <key>LSRequiresIPhoneOS</key>
     <true/>
 
+    <key>UIFileSharingEnabled</key>
+    <true/>
+
     <key>NSLocalNetworkUsageDescription</key>
     <string>Network Clipboard sucht im lokalen Netzwerk nach dem Clipboard-Server.</string>
+
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Network Clipboard zeigt die letzten Fotos an, damit sie in die Zwischenablage übernommen werden können.</string>
+
+    <key>NSCameraUsageDescription</key>
+    <string>Network Clipboard nimmt Fotos auf, damit sie in die Zwischenablage übernommen werden können.</string>
 
     <key>NSAppTransportSecurity</key>
     <dict>

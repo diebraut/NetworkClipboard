@@ -8,11 +8,16 @@
 #include <QDir>
 #include <QFile>
 #include <QGuiApplication>
+#include <QDebug>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QUrl>
+#include <QVariantMap>
 #include <QVector>
 
+#include <limits>
+
+#import <Photos/Photos.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <UIKit/UIKit.h>
 
@@ -92,9 +97,8 @@ QString imageVisualFingerprint(const QImage &image)
     return QString::fromLatin1(bits.toHex());
 }
 
-QByteArray networkPngData(const QImage &sourceImage)
+QByteArray networkPngData(const QImage &sourceImage, qsizetype maxImageBytes = 10 * 1024 * 1024)
 {
-    constexpr qsizetype MaxImageBytes = 10 * 1024 * 1024;
     if (sourceImage.isNull())
         return {};
 
@@ -104,7 +108,7 @@ QByteArray networkPngData(const QImage &sourceImage)
         QBuffer buffer(&pngData);
         if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG"))
             return {};
-        if (pngData.size() <= MaxImageBytes)
+        if (pngData.size() <= maxImageBytes)
             return pngData;
 
         const int nextWidth = qMax(1, qRound(image.width() * 0.8));
@@ -119,12 +123,44 @@ QByteArray networkPngData(const QImage &sourceImage)
     return {};
 }
 
+QByteArray photoClipboardPngData(const QImage &sourceImage)
+{
+    constexpr qsizetype MaxPhotoBytes = 500 * 1024;
+    if (sourceImage.isNull()) {
+        qWarning() << "NC photo encode skipped: source image is null";
+        return {};
+    }
+
+    QImage image = sourceImage;
+    const int longestSide = qMax(image.width(), image.height());
+    if (longestSide > 1200) {
+        image = image.scaled(1200,
+                             1200,
+                             Qt::KeepAspectRatio,
+                             Qt::SmoothTransformation);
+    }
+
+    return networkPngData(image, MaxPhotoBytes);
+}
+
 QString historyImageDirPath()
 {
     const QString basePath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir dir(basePath);
     dir.mkpath(QStringLiteral("history-images"));
     return dir.filePath(QStringLiteral("history-images"));
+}
+
+QString pngBase64FromImage(const QImage &image)
+{
+    if (image.isNull())
+        return {};
+
+    QByteArray pngData;
+    QBuffer buffer(&pngData);
+    if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG"))
+        return {};
+    return QString::fromLatin1(pngData.toBase64());
 }
 
 bool pasteboardMayStillProvideImage(UIPasteboard *pasteboard)
@@ -230,6 +266,81 @@ QImage imageFromUiImage(UIImage *image)
         reinterpret_cast<const char *>(pngData.bytes),
         static_cast<qsizetype>(pngData.length));
     return QImage::fromData(bytes, "PNG");
+}
+
+QImage imageFromCgImage(CGImageRef cgImage)
+{
+    if (cgImage == nil)
+        return {};
+
+    const size_t width = CGImageGetWidth(cgImage);
+    const size_t height = CGImageGetHeight(cgImage);
+    if (width == 0 || height == 0
+        || width > static_cast<size_t>(std::numeric_limits<int>::max())
+        || height > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return {};
+    }
+
+    QImage image(static_cast<int>(width), static_cast<int>(height), QImage::Format_RGBA8888);
+    if (image.isNull())
+        return {};
+
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(image.bits(),
+                                                 width,
+                                                 height,
+                                                 8,
+                                                 static_cast<size_t>(image.bytesPerLine()),
+                                                 colorSpace,
+                                                 kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(colorSpace);
+    if (context == nil)
+        return {};
+
+    CGContextDrawImage(context, CGRectMake(0, 0, width, height), cgImage);
+    CGContextRelease(context);
+    return image;
+}
+
+QImage imageFromDrawnUiImage(UIImage *image)
+{
+    if (image == nil || image.size.width <= 0 || image.size.height <= 0)
+        return {};
+
+    UIGraphicsBeginImageContextWithOptions(image.size, NO, 1.0);
+    [image drawInRect:CGRectMake(0, 0, image.size.width, image.size.height)];
+    UIImage *drawnImage = UIGraphicsGetImageFromCurrentImageContext();
+    CGImageRef cgImage = drawnImage.CGImage;
+    const QImage qimage = imageFromCgImage(cgImage);
+    UIGraphicsEndImageContext();
+    return qimage;
+}
+
+UIViewController *topViewController()
+{
+    UIWindow *keyWindow = nil;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (scene.activationState != UISceneActivationStateForegroundActive
+            || ![scene isKindOfClass:UIWindowScene.class]) {
+            continue;
+        }
+        UIWindowScene *windowScene = static_cast<UIWindowScene *>(scene);
+        for (UIWindow *window in windowScene.windows) {
+            if (window.isKeyWindow) {
+                keyWindow = window;
+                break;
+            }
+        }
+        if (keyWindow != nil)
+            break;
+    }
+    if (keyWindow == nil)
+        keyWindow = UIApplication.sharedApplication.keyWindow;
+
+    UIViewController *controller = keyWindow.rootViewController;
+    while (controller.presentedViewController != nil)
+        controller = controller.presentedViewController;
+    return controller;
 }
 
 QImage pasteboardImage()
@@ -343,6 +454,59 @@ QImage pasteboardImage()
 constexpr auto PasteSettingsOfferSeenKey = "pasteSettingsOfferSeen";
 }
 
+@interface NetworkClipboardCameraDelegate : NSObject <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
+- (instancetype)initWithBridge:(ClipboardBridge *)bridge;
+@end
+
+@implementation NetworkClipboardCameraDelegate {
+    ClipboardBridge *m_bridge;
+}
+
+- (instancetype)initWithBridge:(ClipboardBridge *)bridge
+{
+    self = [super init];
+    if (self)
+        m_bridge = bridge;
+    return self;
+}
+
+- (void)imagePickerController:(UIImagePickerController *)picker
+didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> *)info
+{
+    UIImage *image = info[UIImagePickerControllerOriginalImage];
+    [picker dismissViewControllerAnimated:YES completion:^{
+        ClipboardBridge *bridge = m_bridge;
+        QMetaObject::invokeMethod(bridge, [bridge]() {
+            emit bridge->cameraImageProcessingStarted();
+        }, Qt::QueuedConnection);
+
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            const QImage qimage = imageFromDrawnUiImage(image);
+            const QByteArray contentData = photoClipboardPngData(qimage);
+            const QString contentBase64 = contentData.isEmpty()
+                ? QString{}
+                : QString::fromLatin1(contentData.toBase64());
+            QMetaObject::invokeMethod(bridge, [bridge, contentBase64]() {
+                if (contentBase64.isEmpty())
+                    emit bridge->cameraCaptureFailed(QStringLiteral("Kamerabild konnte nicht verarbeitet werden."));
+                else
+                    emit bridge->cameraImageCaptured(contentBase64);
+            }, Qt::QueuedConnection);
+        });
+    }];
+}
+
+- (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker
+{
+    [picker dismissViewControllerAnimated:YES completion:^{
+        QMetaObject::invokeMethod(m_bridge, [bridge = m_bridge]() {
+            emit bridge->cameraCaptureFailed(QString{});
+        }, Qt::QueuedConnection);
+    }];
+}
+
+@end
+
 ClipboardBridge::ClipboardBridge(QObject *parent)
     : QObject(parent)
 {
@@ -396,9 +560,14 @@ QString ClipboardBridge::imageFingerprint() const
 
 QString ClipboardBridge::imageFingerprintFromBase64(const QString &base64) const
 {
-    const QImage image = QImage::fromData(QByteArray::fromBase64(base64.toLatin1()), "PNG");
-    if (image.isNull())
+    const QByteArray sourcePngData = QByteArray::fromBase64(base64.toLatin1());
+    const QImage image = QImage::fromData(sourcePngData, "PNG");
+    if (image.isNull()) {
+        qWarning() << "NC image fingerprint failed"
+                   << "base64Len" << base64.length()
+                   << "bytes" << sourcePngData.size();
         return {};
+    }
     return QString::fromLatin1(imageFingerprintBytes(image).toHex());
 }
 
@@ -410,20 +579,31 @@ QString ClipboardBridge::imageVisualFingerprintFromBase64(const QString &base64)
 
 QString ClipboardBridge::thumbnailBase64FromBase64(const QString &base64, int maxSize) const
 {
-    const QImage image = QImage::fromData(QByteArray::fromBase64(base64.toLatin1()), "PNG");
-    if (image.isNull())
+    const QByteArray sourcePngData = QByteArray::fromBase64(base64.toLatin1());
+    const QImage image = QImage::fromData(sourcePngData, "PNG");
+    if (image.isNull()) {
+        qWarning() << "NC thumbnail failed: decode"
+                   << "base64Len" << base64.length()
+                   << "bytes" << sourcePngData.size()
+                   << "maxSize" << maxSize;
         return {};
+    }
 
     const int boundedMaxSize = qBound(24, maxSize, 1024);
     const QImage thumbnail = image.scaled(boundedMaxSize,
                                           boundedMaxSize,
                                           Qt::KeepAspectRatio,
                                           Qt::SmoothTransformation);
-    QByteArray pngData;
-    QBuffer buffer(&pngData);
-    if (!buffer.open(QIODevice::WriteOnly) || !thumbnail.save(&buffer, "PNG"))
+    QByteArray thumbnailPngData;
+    QBuffer buffer(&thumbnailPngData);
+    if (!buffer.open(QIODevice::WriteOnly) || !thumbnail.save(&buffer, "PNG")) {
+        qWarning() << "NC thumbnail failed: encode"
+                   << "sourceSize" << image.size()
+                   << "thumbSize" << thumbnail.size()
+                   << "maxSize" << maxSize;
         return {};
-    return QString::fromLatin1(pngData.toBase64());
+    }
+    return QString::fromLatin1(thumbnailPngData.toBase64());
 }
 
 bool ClipboardBridge::imageHasMeaningfulContentBase64(const QString &base64) const
@@ -551,6 +731,9 @@ QString ClipboardBridge::setPreviewImageBase64(const QString &base64)
     const QByteArray pngData = QByteArray::fromBase64(base64.toLatin1());
     const QImage image = QImage::fromData(pngData, "PNG");
     if (image.isNull()) {
+        qWarning() << "NC preview file fallback failed: decode"
+                   << "base64Len" << base64.length()
+                   << "bytes" << pngData.size();
         m_previewImage = {};
         ++m_previewImageRevision;
         return {};
@@ -567,12 +750,17 @@ QString ClipboardBridge::setPreviewImageBase64(const QString &base64)
     const QString path = QDir(cacheDir).filePath(
         QStringLiteral("network-clipboard-preview-%1.png").arg(m_previewImageRevision));
     QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning() << "NC preview file fallback failed: open" << path << file.errorString();
         return {};
-    if (file.write(pngData) != pngData.size())
+    }
+    if (file.write(pngData) != pngData.size()) {
+        qWarning() << "NC preview file fallback failed: write" << path << file.errorString();
         return {};
+    }
 
-    return QUrl::fromLocalFile(path).toString();
+    const QString url = QUrl::fromLocalFile(path).toString();
+    return url;
 }
 
 void ClipboardBridge::clearPreviewImage()
@@ -582,6 +770,266 @@ void ClipboardBridge::clearPreviewImage()
 
     m_previewImage = {};
     ++m_previewImageRevision;
+}
+
+void ClipboardBridge::loadRecentPhotos(int maxCount)
+{
+    const int boundedMaxCount = qBound(1, maxCount, 80);
+    auto *self = this;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        auto startLoadBlock = ^{
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                QVariantList photos;
+
+                PHFetchOptions *options = [[PHFetchOptions alloc] init];
+                options.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"creationDate" ascending:NO]];
+                options.fetchLimit = boundedMaxCount;
+
+                PHFetchResult<PHAsset *> *assets =
+                    [PHAsset fetchAssetsWithMediaType:PHAssetMediaTypeImage options:options];
+                PHImageRequestOptions *thumbnailOptions = [[PHImageRequestOptions alloc] init];
+                thumbnailOptions.synchronous = YES;
+                thumbnailOptions.deliveryMode = PHImageRequestOptionsDeliveryModeOpportunistic;
+                thumbnailOptions.resizeMode = PHImageRequestOptionsResizeModeExact;
+                thumbnailOptions.networkAccessAllowed = YES;
+
+                PHImageRequestOptions *fallbackOptions = [[PHImageRequestOptions alloc] init];
+                fallbackOptions.synchronous = YES;
+                fallbackOptions.deliveryMode = PHImageRequestOptionsDeliveryModeFastFormat;
+                fallbackOptions.resizeMode = PHImageRequestOptionsResizeModeFast;
+                fallbackOptions.networkAccessAllowed = YES;
+
+                PHImageManager *manager = [PHImageManager defaultManager];
+                const NSUInteger count = qMin<NSUInteger>(assets.count, static_cast<NSUInteger>(boundedMaxCount));
+
+                for (NSUInteger i = 0; i < count; ++i) {
+                    PHAsset *asset = [assets objectAtIndex:i];
+                    __block QImage thumbnailImage;
+                    [manager requestImageForAsset:asset
+                                       targetSize:CGSizeMake(220, 220)
+                                      contentMode:PHImageContentModeAspectFill
+                                          options:thumbnailOptions
+                                    resultHandler:^(UIImage *result, NSDictionary *) {
+                        thumbnailImage = imageFromCgImage(result.CGImage);
+                    }];
+
+                    if (thumbnailImage.isNull()) {
+                        __block QByteArray imageBytes;
+                        [manager requestImageDataAndOrientationForAsset:asset
+                                                                options:fallbackOptions
+                                                          resultHandler:^(NSData *data,
+                                                                          NSString *,
+                                                                          CGImagePropertyOrientation,
+                                                                          NSDictionary *) {
+                            if (data != nil && data.length > 0) {
+                                imageBytes = QByteArray(
+                                    reinterpret_cast<const char *>(data.bytes),
+                                    static_cast<qsizetype>(data.length));
+                            }
+                        }];
+
+                        QImage fallbackImage;
+                        if (!imageBytes.isEmpty())
+                            fallbackImage = QImage::fromData(imageBytes);
+                        if (!fallbackImage.isNull())
+                            thumbnailImage = fallbackImage.scaled(220,
+                                                                  220,
+                                                                  Qt::KeepAspectRatioByExpanding,
+                                                                  Qt::FastTransformation);
+                    }
+
+                    if (thumbnailImage.isNull())
+                        continue;
+
+                    const QString thumbnailBase64 = pngBase64FromImage(thumbnailImage);
+                    if (thumbnailBase64.isEmpty())
+                        continue;
+
+                    QVariantMap item;
+                    item.insert(QStringLiteral("thumbnail"), thumbnailBase64);
+                    item.insert(QStringLiteral("id"), QString::fromUtf8(asset.localIdentifier.UTF8String));
+                    if (asset.creationDate)
+                        item.insert(QStringLiteral("createdAtMs"),
+                                    qint64([asset.creationDate timeIntervalSince1970] * 1000.0));
+                    photos.push_back(item);
+                }
+
+                QMetaObject::invokeMethod(self, [self, photos]() {
+                    emit self->recentPhotosLoaded(photos);
+                }, Qt::QueuedConnection);
+            });
+        };
+
+        const PHAuthorizationStatus status =
+            [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
+        if (status == PHAuthorizationStatusAuthorized || status == PHAuthorizationStatusLimited) {
+            startLoadBlock();
+            return;
+        }
+
+        if (status == PHAuthorizationStatusNotDetermined) {
+            [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelReadWrite
+                                                       handler:^(PHAuthorizationStatus newStatus) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (newStatus == PHAuthorizationStatusAuthorized
+                        || newStatus == PHAuthorizationStatusLimited) {
+                        startLoadBlock();
+                    } else {
+                        QMetaObject::invokeMethod(self, [self]() {
+                            emit self->recentPhotosLoaded(QVariantList{});
+                        }, Qt::QueuedConnection);
+                    }
+                });
+            }];
+            return;
+        }
+
+        QMetaObject::invokeMethod(self, [self]() {
+            emit self->recentPhotosLoaded(QVariantList{});
+        }, Qt::QueuedConnection);
+    });
+}
+
+void ClipboardBridge::loadPhotoContent(const QString &assetId)
+{
+    if (assetId.isEmpty()) {
+        emit photoContentLoaded(assetId, QString{});
+        return;
+    }
+
+    auto *self = this;
+    const QString requestedAssetId = assetId;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        auto loadBlock = ^{
+            PHFetchOptions *options = [[PHFetchOptions alloc] init];
+            PHFetchResult<PHAsset *> *assets =
+                [PHAsset fetchAssetsWithLocalIdentifiers:@[requestedAssetId.toNSString()] options:options];
+            PHAsset *asset = assets.count > 0 ? [assets objectAtIndex:0] : nil;
+            if (asset == nil) {
+                QMetaObject::invokeMethod(self, [self, requestedAssetId]() {
+                    emit self->photoContentLoaded(requestedAssetId, QString{});
+                }, Qt::QueuedConnection);
+                return;
+            }
+
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                PHImageRequestOptions *dataOptions = [[PHImageRequestOptions alloc] init];
+                dataOptions.synchronous = YES;
+                dataOptions.deliveryMode = PHImageRequestOptionsDeliveryModeHighQualityFormat;
+                dataOptions.networkAccessAllowed = YES;
+                dataOptions.version = PHImageRequestOptionsVersionCurrent;
+
+                __block QByteArray imageBytes;
+                __block NSDictionary *dataInfo = nil;
+                [[PHImageManager defaultManager] requestImageDataAndOrientationForAsset:asset
+                                                                                options:dataOptions
+                                                                          resultHandler:^(NSData *data,
+                                                                                          NSString *,
+                                                                                          CGImagePropertyOrientation,
+                                                                                          NSDictionary *info) {
+                    dataInfo = info;
+                    if (data != nil && data.length > 0) {
+                        imageBytes = QByteArray(
+                            reinterpret_cast<const char *>(data.bytes),
+                            static_cast<qsizetype>(data.length));
+                    }
+                }];
+
+                QImage qimage;
+                if (!imageBytes.isEmpty())
+                    qimage = imageFromData([NSData dataWithBytes:imageBytes.constData()
+                                                          length:static_cast<NSUInteger>(imageBytes.size())]);
+                if (qimage.isNull()) {
+                    PHImageRequestOptions *imageOptions = [[PHImageRequestOptions alloc] init];
+                    imageOptions.synchronous = YES;
+                    imageOptions.deliveryMode = PHImageRequestOptionsDeliveryModeHighQualityFormat;
+                    imageOptions.resizeMode = PHImageRequestOptionsResizeModeNone;
+                    imageOptions.networkAccessAllowed = YES;
+                    imageOptions.version = PHImageRequestOptionsVersionCurrent;
+
+                    __block UIImage *fallbackImage = nil;
+                    __block NSDictionary *imageInfo = nil;
+                    [[PHImageManager defaultManager] requestImageForAsset:asset
+                                                               targetSize:PHImageManagerMaximumSize
+                                                              contentMode:PHImageContentModeAspectFit
+                                                                  options:imageOptions
+                                                            resultHandler:^(UIImage *result, NSDictionary *info) {
+                        imageInfo = info;
+                        if (result != nil)
+                            fallbackImage = result;
+                    }];
+                    qimage = imageFromDrawnUiImage(fallbackImage);
+                }
+                const QByteArray contentData = photoClipboardPngData(qimage);
+                const QString contentBase64 = contentData.isEmpty()
+                    ? QString{}
+                    : QString::fromLatin1(contentData.toBase64());
+                QMetaObject::invokeMethod(self, [self, requestedAssetId, contentBase64]() {
+                    emit self->photoContentLoaded(requestedAssetId, contentBase64);
+                }, Qt::QueuedConnection);
+            });
+        };
+
+        const PHAuthorizationStatus status =
+            [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
+        if (status == PHAuthorizationStatusAuthorized || status == PHAuthorizationStatusLimited) {
+            loadBlock();
+            return;
+        }
+
+        if (status == PHAuthorizationStatusNotDetermined) {
+            [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelReadWrite
+                                                       handler:^(PHAuthorizationStatus newStatus) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (newStatus == PHAuthorizationStatusAuthorized
+                        || newStatus == PHAuthorizationStatusLimited) {
+                        loadBlock();
+                    } else {
+                        QMetaObject::invokeMethod(self, [self, requestedAssetId]() {
+                            emit self->photoContentLoaded(requestedAssetId, QString{});
+                        }, Qt::QueuedConnection);
+                    }
+                });
+            }];
+            return;
+        }
+
+        QMetaObject::invokeMethod(self, [self, requestedAssetId]() {
+            emit self->photoContentLoaded(requestedAssetId, QString{});
+        }, Qt::QueuedConnection);
+    });
+}
+
+void ClipboardBridge::openCamera()
+{
+    auto *self = this;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (![UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypeCamera]) {
+            QMetaObject::invokeMethod(self, [self]() {
+                emit self->cameraCaptureFailed(QStringLiteral("Kamera ist auf diesem Gerät nicht verfügbar."));
+            }, Qt::QueuedConnection);
+            return;
+        }
+
+        UIViewController *presenter = topViewController();
+        if (presenter == nil) {
+            QMetaObject::invokeMethod(self, [self]() {
+                emit self->cameraCaptureFailed(QStringLiteral("Kamera konnte nicht geöffnet werden."));
+            }, Qt::QueuedConnection);
+            return;
+        }
+
+        static NetworkClipboardCameraDelegate *cameraDelegate = nil;
+        cameraDelegate = [[NetworkClipboardCameraDelegate alloc] initWithBridge:self];
+
+        UIImagePickerController *picker = [[UIImagePickerController alloc] init];
+        picker.sourceType = UIImagePickerControllerSourceTypeCamera;
+        picker.mediaTypes = @[(NSString *)UTTypeImage.identifier];
+        picker.allowsEditing = NO;
+        picker.delegate = cameraDelegate;
+        [presenter presentViewController:picker animated:YES completion:nil];
+    });
 }
 
 QImage ClipboardBridge::previewImage() const

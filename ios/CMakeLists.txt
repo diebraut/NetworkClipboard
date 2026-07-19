@@ -37,7 +37,7 @@ target_link_libraries(NetworkClipboardIOS
 )
 
 if(IOS)
-    target_link_libraries(NetworkClipboardIOS PRIVATE "-framework UIKit")
+    target_link_libraries(NetworkClipboardIOS PRIVATE "-framework UIKit" "-framework Photos")
     set_target_properties(NetworkClipboardIOS PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_GUI_IDENTIFIER de.localtools.networkclipboard

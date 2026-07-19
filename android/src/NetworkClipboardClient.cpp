@@ -63,6 +63,11 @@ QString displayNameForServer(const QString &serverName, const QString &serverUrl
     return displayName;
 }
 
+QString activeServerStatus(const QString &serverName)
+{
+    return QStringLiteral("Server aktiv: %1").arg(serverName);
+}
+
 bool isLoopbackOrWildcardUrl(const QString &serverUrl)
 {
     const QHostAddress address(QUrl(serverUrl).host());
@@ -200,12 +205,10 @@ void NetworkClipboardClient::sendText(const QString &text, const QString &device
                         [this, body, content](const QString &) {
                             setStatus(QStringLiteral("Sende an %1").arg(m_serverName));
 
-                            qInfo() << "NetworkClipboardAndroid: sending clipboard text to" << normalizedServerUrl();
                             QNetworkReply *reply = m_network.post(request(QStringLiteral("/api/clipboard")), QJsonDocument(body).toJson(QJsonDocument::Compact));
                             connect(reply, &QNetworkReply::finished, this, [this, reply, content]() {
                                 if (reply->error() == QNetworkReply::NoError) {
                                     setStatus(QStringLiteral("Sent."));
-                                    qInfo() << "NetworkClipboardAndroid: clipboard text sent";
                                     emit textSent(content);
                                 } else {
                                     setStatus(replyErrorMessage(reply));
@@ -236,11 +239,6 @@ void NetworkClipboardClient::sendImage(const QString &base64Png,
         return;
     }
 
-    qInfo() << "NetworkClipboardAndroid: sending clipboard image to" << normalizedServerUrl()
-            << "fingerprint=" << fingerprint.left(12)
-            << "base64Len=" << base64Png.size()
-            << "pngBytes=" << pngData.size();
-
     QJsonObject body{
         {QStringLiteral("deviceId"), QStringLiteral("mobile-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces))},
         {QStringLiteral("deviceName"), deviceName},
@@ -261,9 +259,6 @@ void NetworkClipboardClient::sendImage(const QString &base64Png,
                                     const QJsonObject stored = QJsonDocument::fromJson(reply->readAll()).object();
                                     m_latestEntryId = stored.value(QStringLiteral("id")).toString();
                                     setStatus(QStringLiteral("Bild gesendet."));
-                                    qInfo() << "NetworkClipboardAndroid: clipboard image sent"
-                                            << "id=" << m_latestEntryId
-                                            << "fingerprint=" << fingerprint.left(12);
                                     emit imageSent(fingerprint);
                                 } else {
                                     const QString message = replyErrorMessage(reply);
@@ -345,16 +340,9 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object)
 {
     const QString id = object.value(QStringLiteral("id")).toString();
     const QString type = object.value(QStringLiteral("type")).toString(QStringLiteral("text"));
-    qInfo() << "NetworkClipboardAndroid: latest entry"
-            << "id=" << id
-            << "previous=" << m_latestEntryId
-            << "type=" << type
-            << "contentLen=" << object.value(QStringLiteral("content")).toString().size()
-            << "contentUrl=" << object.value(QStringLiteral("contentUrl")).toString();
-    if (!id.isEmpty() && id == m_latestEntryId) {
-        qInfo() << "NetworkClipboardAndroid: latest entry ignored duplicate" << id;
+    if (!id.isEmpty() && id == m_latestEntryId)
         return;
-    }
+
     if (type == QStringLiteral("image")) {
         const QString mimeType = object.value(QStringLiteral("mimeType")).toString();
         const QString content = object.value(QStringLiteral("content")).toString();
@@ -378,7 +366,6 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object)
                 imageUrl.prepend(normalizedServerUrl());
             }
 
-            qInfo() << "NetworkClipboardAndroid: downloading image" << "id=" << id << "url=" << imageUrl;
             QNetworkRequest imageRequest{QUrl(imageUrl)};
             imageRequest.setRawHeader("Authorization", QByteArray("Bearer ") + m_token.toUtf8());
             imageRequest.setRawHeader("Accept", "image/png");
@@ -397,7 +384,6 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object)
                 }
 
                 const QByteArray pngData = reply->readAll();
-                qInfo() << "NetworkClipboardAndroid: image download finished" << "id=" << id << "bytes=" << pngData.size();
                 constexpr char PngSignature[] = "\x89PNG\r\n\x1a\n";
                 if (pngData.isEmpty()
                     || pngData.size() > MaxImageBytes
@@ -431,7 +417,6 @@ void NetworkClipboardClient::handleClipboardEntry(const QJsonObject &object)
             if (m_pendingImageEntryId == id)
                 m_pendingImageEntryId.clear();
         }
-        qInfo() << "NetworkClipboardAndroid: emitting inline image" << "id=" << id << "base64Len=" << content.size();
         emit latestImageReceived(content);
         return;
     }
@@ -872,7 +857,7 @@ void NetworkClipboardClient::probeDiscoveryUrl(const QUrl &url, bool networkScan
             if (m_servers.isEmpty()) {
                 setStatus(QStringLiteral("Kein Clipboard-Server gefunden."));
             } else if (m_serverActive && !m_serverName.isEmpty()) {
-                setStatus(QStringLiteral("Server aktiv: %1").arg(m_serverName));
+                setStatus(activeServerStatus(m_serverName));
             } else {
                 setStatus(QStringLiteral("Serverliste aktualisiert."));
             }
@@ -1155,7 +1140,7 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object, cons
                 setServerActive(serverAvailable);
                 saveSelectedServer();
                 setStatus(serverAvailable
-                              ? QStringLiteral("Server aktiv: %1").arg(m_serverName)
+                              ? activeServerStatus(m_serverName)
                               : QStringLiteral("Server gefunden, Windows Tray-Agent nicht aktiv: %1").arg(m_serverName));
             }
             return;
@@ -1200,9 +1185,9 @@ void NetworkClipboardClient::addDiscoveredServer(const QJsonObject &object, cons
         setServerActive(serverAvailable);
         saveSelectedServer();
         setStatus(serverAvailable
-                      ? QStringLiteral("Server aktiv: %1").arg(m_serverName)
+                      ? activeServerStatus(m_serverName)
                       : QStringLiteral("Server gefunden, Windows Tray-Agent nicht aktiv: %1").arg(m_serverName));
-    } else {
+    } else if (!m_serverActive) {
         setStatus(QStringLiteral("Server gefunden: %1").arg(name));
     }
 }
@@ -1552,11 +1537,7 @@ void NetworkClipboardClient::activateServer(int index)
     setToken(server.value(QStringLiteral("token")).toString());
     setServerActive(true);
     saveSelectedServer();
-    setStatus(QStringLiteral("%1 aktiv: %2")
-                  .arg(server.value(QStringLiteral("main")).toBool()
-                           ? QStringLiteral("Main-Server")
-                           : QStringLiteral("Subserver"),
-                       m_serverName));
+    setStatus(activeServerStatus(m_serverName));
 }
 
 void NetworkClipboardClient::saveKnownServers()

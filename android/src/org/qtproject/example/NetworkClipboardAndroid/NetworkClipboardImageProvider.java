@@ -8,6 +8,7 @@ import android.database.MatrixCursor;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
+import android.webkit.MimeTypeMap;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -35,19 +36,35 @@ public final class NetworkClipboardImageProvider extends ContentProvider
     @Override
     public String getType(Uri uri)
     {
-        return "image/png";
+        String name = uri.getQueryParameter("name");
+        String extension = name == null ? "" : MimeTypeMap.getFileExtensionFromUrl(name);
+        String mimeType = extension == null || extension.isEmpty()
+            ? null
+            : MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.toLowerCase());
+        return mimeType == null ? "image/png" : mimeType;
     }
 
     @Override
     public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException
     {
-        if (!"r".equals(mode))
-            throw new FileNotFoundException("Read-only provider");
-
         File file = resolveFile(uri);
-        if (!file.isFile())
+        if ("r".equals(mode)) {
+            if (!file.isFile())
+                throw new FileNotFoundException("Clipboard image not found");
+            return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
+        }
+
+        if (mode == null || !mode.contains("w"))
+            throw new FileNotFoundException("Unsupported mode");
+
+        File directory = file.getParentFile();
+        if (directory == null || (!directory.exists() && !directory.mkdirs()))
             throw new FileNotFoundException("Clipboard image not found");
-        return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
+
+        return ParcelFileDescriptor.open(file,
+            ParcelFileDescriptor.MODE_CREATE
+                | ParcelFileDescriptor.MODE_TRUNCATE
+                | ParcelFileDescriptor.MODE_WRITE_ONLY);
     }
 
     @Override

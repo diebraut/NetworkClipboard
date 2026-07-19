@@ -5,7 +5,7 @@ project(NetworkClipboardAndroid VERSION 0.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Qml QmlCore Quick QuickControls2 Network)
+find_package(Qt6 6.7 REQUIRED COMPONENTS Core CorePrivate Gui Qml QmlCore Quick QuickControls2 Network)
 
 qt_standard_project_setup()
 
@@ -33,6 +33,10 @@ target_link_libraries(NetworkClipboardAndroid
 )
 
 if(ANDROID)
+    if(TARGET Qt6::CorePrivate)
+        target_link_libraries(NetworkClipboardAndroid PRIVATE Qt6::CorePrivate)
+    endif()
+
     set_target_properties(NetworkClipboardAndroid PROPERTIES
         QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
         QT_ANDROID_APP_ICON "@mipmap/ic_launcher"

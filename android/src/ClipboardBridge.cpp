@@ -9,14 +9,23 @@
 #include <QFile>
 #include <QGuiApplication>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QMimeData>
+#include <QPointer>
 #include <QStandardPaths>
 #include <QTextDocument>
+#include <QVariantMap>
 #include <QVector>
+
+#include <utility>
 
 #ifdef Q_OS_ANDROID
 #include <QJniObject>
 #include <QtCore/qcoreapplication_platform.h>
+#include <QtCore/private/qandroidextras_p.h>
 #endif
 
 namespace {
@@ -106,9 +115,8 @@ QString imageVisualFingerprint(const QImage &image)
     return QString::fromLatin1(bits.toHex());
 }
 
-QByteArray networkPngData(const QImage &sourceImage)
+QByteArray networkPngData(const QImage &sourceImage, qsizetype maxImageBytes = 10 * 1024 * 1024)
 {
-    constexpr qsizetype MaxImageBytes = 10 * 1024 * 1024;
     if (sourceImage.isNull())
         return {};
 
@@ -118,7 +126,7 @@ QByteArray networkPngData(const QImage &sourceImage)
         QBuffer buffer(&pngData);
         if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG"))
             return {};
-        if (pngData.size() <= MaxImageBytes)
+        if (pngData.size() <= maxImageBytes)
             return pngData;
 
         const int nextWidth = qMax(1, qRound(image.width() * 0.8));
@@ -142,6 +150,8 @@ QString historyImageDirPath()
 }
 
 #ifdef Q_OS_ANDROID
+constexpr int CameraCaptureRequestCode = 46022;
+
 QJniObject androidContext()
 {
     return QNativeInterface::QAndroidApplication::context();
@@ -160,6 +170,53 @@ QString androidClipboardImageBase64()
         context.object());
     return result.toString();
 }
+
+class CameraCaptureResultReceiver final : public QAndroidActivityResultReceiver
+{
+public:
+    CameraCaptureResultReceiver(ClipboardBridge *bridge, QString uriText)
+        : m_bridge(bridge)
+        , m_uriText(std::move(uriText))
+    {
+    }
+
+    void handleActivityResult(int receiverRequestCode, int resultCode, const QJniObject &data) override
+    {
+        Q_UNUSED(data);
+
+        QPointer<ClipboardBridge> bridge = m_bridge;
+        const QString uriText = m_uriText;
+        delete this;
+
+        if (!bridge || receiverRequestCode != CameraCaptureRequestCode)
+            return;
+
+        if (resultCode != -1) {
+            emit bridge->cameraCaptureFailed(QString{});
+            return;
+        }
+
+        emit bridge->cameraImageProcessingStarted();
+
+        const QJniObject context = androidContext();
+        const QJniObject uri = QJniObject::fromString(uriText);
+        const QJniObject base64 = QJniObject::callStaticObjectMethod(
+            "org/qtproject/example/NetworkClipboardAndroid/ImageClipboardHelper",
+            "cameraContentBase64",
+            "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;",
+            context.object(),
+            uri.object<jstring>());
+        const QString content = base64.toString();
+        if (content.isEmpty())
+            emit bridge->cameraCaptureFailed(QStringLiteral("Kamerabild konnte nicht verarbeitet werden."));
+        else
+            emit bridge->cameraImageCaptured(content);
+    }
+
+private:
+    QPointer<ClipboardBridge> m_bridge;
+    QString m_uriText;
+};
 #endif
 }
 
@@ -383,6 +440,117 @@ bool ClipboardBridge::setImageBase64(const QString &base64)
     QGuiApplication::clipboard()->setImage(image);
 #endif
     return true;
+}
+
+void ClipboardBridge::loadRecentPhotos(int maxCount)
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = androidContext();
+    if (!context.isValid()) {
+        emit recentPhotosLoaded(QVariantList{});
+        return;
+    }
+
+    const QJniObject json = QJniObject::callStaticObjectMethod(
+        "org/qtproject/example/NetworkClipboardAndroid/ImageClipboardHelper",
+        "recentPhotosJson",
+        "(Landroid/content/Context;I)Ljava/lang/String;",
+        context.object(),
+        jint(qBound(1, maxCount, 80)));
+    const QJsonDocument document = QJsonDocument::fromJson(json.toString().toUtf8());
+    QVariantList photos;
+    if (document.isArray()) {
+        const QJsonArray array = document.array();
+        photos.reserve(array.size());
+        for (const QJsonValue &value : array) {
+            if (!value.isObject())
+                continue;
+            const QJsonObject object = value.toObject();
+            QVariantMap item;
+            item.insert(QStringLiteral("id"), object.value(QStringLiteral("id")).toString());
+            item.insert(QStringLiteral("thumbnail"), object.value(QStringLiteral("thumbnail")).toString());
+            item.insert(QStringLiteral("createdAtMs"),
+                        qint64(object.value(QStringLiteral("createdAtMs")).toDouble()));
+            photos.push_back(item);
+        }
+    }
+    emit recentPhotosLoaded(photos);
+#else
+    Q_UNUSED(maxCount);
+    emit recentPhotosLoaded(QVariantList{});
+#endif
+}
+
+void ClipboardBridge::loadPhotoContent(const QString &assetId)
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = androidContext();
+    const QJniObject uri = QJniObject::fromString(assetId);
+    if (!context.isValid()) {
+        emit photoContentLoaded(assetId, QString{});
+        return;
+    }
+
+    const QJniObject base64 = QJniObject::callStaticObjectMethod(
+        "org/qtproject/example/NetworkClipboardAndroid/ImageClipboardHelper",
+        "photoContentBase64",
+        "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;",
+        context.object(),
+        uri.object<jstring>());
+    emit photoContentLoaded(assetId, base64.toString());
+#else
+    emit photoContentLoaded(assetId, QString{});
+#endif
+}
+
+void ClipboardBridge::openCamera()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = androidContext();
+    if (!context.isValid()) {
+        emit cameraCaptureFailed(QStringLiteral("Kamera konnte nicht geöffnet werden."));
+        return;
+    }
+
+    const bool hasCameraApp = QJniObject::callStaticMethod<jboolean>(
+        "org/qtproject/example/NetworkClipboardAndroid/ImageClipboardHelper",
+        "hasCameraApp",
+        "(Landroid/content/Context;)Z",
+        context.object());
+    if (!hasCameraApp) {
+        emit cameraCaptureFailed(QStringLiteral("Kamera ist auf diesem Gerät nicht verfügbar."));
+        return;
+    }
+
+    const QJniObject captureUri = QJniObject::callStaticObjectMethod(
+        "org/qtproject/example/NetworkClipboardAndroid/ImageClipboardHelper",
+        "createCameraCaptureUri",
+        "(Landroid/content/Context;)Ljava/lang/String;",
+        context.object());
+    const QString uriText = captureUri.toString();
+    if (uriText.isEmpty()) {
+        emit cameraCaptureFailed(QStringLiteral("Kamera konnte nicht geöffnet werden."));
+        return;
+    }
+
+    QAndroidIntent intent(QStringLiteral("android.media.action.IMAGE_CAPTURE"));
+    QJniObject uri = QJniObject::callStaticObjectMethod(
+        "android/net/Uri",
+        "parse",
+        "(Ljava/lang/String;)Landroid/net/Uri;",
+        QJniObject::fromString(uriText).object<jstring>());
+    QJniObject intentObject = intent.handle();
+    intentObject.callObjectMethod("putExtra",
+                                  "(Ljava/lang/String;Landroid/os/Parcelable;)Landroid/content/Intent;",
+                                  QJniObject::fromString(QStringLiteral("output")).object<jstring>(),
+                                  uri.object());
+    intentObject.callObjectMethod("addFlags", "(I)Landroid/content/Intent;", jint(3));
+
+    QtAndroidPrivate::startActivity(intent, CameraCaptureRequestCode,
+                                    new CameraCaptureResultReceiver(this, uriText));
+#else
+    emit cameraCaptureFailed(QStringLiteral("Kamera ist auf diesem Gerät nicht verfügbar."));
+#endif
 }
 
 void ClipboardBridge::invalidateImageCache()

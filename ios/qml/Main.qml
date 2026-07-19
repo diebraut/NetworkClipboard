@@ -38,6 +38,19 @@ ApplicationWindow {
     property double localClipboardSyncPausedUntil: 0
     property bool serverContentUnavailable: false
     readonly property bool compactLayout: width < 520
+    property bool addContentActionsVisible: false
+    property bool photoGalleryVisible: false
+    property bool photoGalleryLoading: false
+    property var recentPhotos: []
+    property int selectedPhotoIndex: -1
+    property bool selectedPhotoApplying: false
+    property string pendingSelectedPhotoId: ""
+    property string photoApplyError: ""
+    property bool cameraImageLoading: false
+    property double cameraImageLoadingStartedAt: 0
+    property string pendingCameraImageBase64: ""
+    property string cameraApplyError: ""
+    readonly property bool debugLogsEnabled: false
     readonly property bool showingServerUnavailablePreview: serverContentUnavailable
         && !currentPreviewFromLocalClipboard
         && currentPreviewHistoryIndex <= 0
@@ -52,6 +65,90 @@ ApplicationWindow {
         return Qt.platform.os === "ios" ? "iPhone" : "Android"
     }
 
+    function openPhotoGallery() {
+        addContentActionsVisible = false
+        photoGalleryVisible = true
+        photoGalleryLoading = true
+        recentPhotos = []
+        selectedPhotoIndex = -1
+        selectedPhotoApplying = false
+        pendingSelectedPhotoId = ""
+        photoApplyError = ""
+        cameraApplyError = ""
+        localClipboard.loadRecentPhotos(18)
+    }
+
+    function openCameraCapture() {
+        addContentActionsVisible = false
+        cameraImageLoading = false
+        cameraApplyError = ""
+        debugLog("camera open requested")
+        localClipboard.openCamera()
+    }
+
+    function applySelectedPhoto() {
+        if (selectedPhotoIndex < 0 || selectedPhotoIndex >= recentPhotos.length)
+            return
+
+        const photo = recentPhotos[selectedPhotoIndex]
+        const content = photo.content || ""
+        if (content.length > 0) {
+            applyPhotoContent(content)
+            return
+        }
+
+        const assetId = photo.id || ""
+        if (assetId.length === 0)
+            return
+
+        selectedPhotoApplying = true
+        pendingSelectedPhotoId = assetId
+        photoApplyError = ""
+        debugLog("selected photo apply requested",
+            "assetId=" + assetId)
+        localClipboard.loadPhotoContent(assetId)
+    }
+
+    function applyPhotoContent(content) {
+        if (content.length === 0)
+            return
+
+        const fingerprint = localClipboard.imageFingerprintFromBase64(content)
+        if (fingerprint.length === 0) {
+            selectedPhotoApplying = false
+            return
+        }
+
+        photoGalleryVisible = false
+        selectedPhotoApplying = false
+        pendingSelectedPhotoId = ""
+        photoApplyError = ""
+        initialServerReadPending = false
+        initialServerReadTimer.stop()
+        cancelForcedServerPreview()
+        localPublishGuardUntil = networkClipboard.serverActive ? Date.now() + 3000 : 0
+        observedLocalImageFingerprint = fingerprint
+        observedLocalClipboardText = ""
+        lastAutoSentText = ""
+        showLocalPreviewImage(content, fingerprint)
+
+        if (localClipboard.setImageBase64(content))
+            observedPasteboardChangeCount = Qt.platform.os === "ios" ? localClipboard.pasteboardChangeCount() : observedPasteboardChangeCount
+
+        if (networkClipboard.serverActive && !imageSendInFlight) {
+            pendingAutoSendImageFingerprint = fingerprint
+            imageSendInFlight = true
+            debugLog("selected photo send requested",
+                "fingerprint=" + fingerprint
+                + " base64Len=" + content.length)
+            networkClipboard.sendImage(content, fingerprint, deviceName())
+        } else if (networkClipboard.serverActive) {
+            debugLog("selected photo send skipped",
+                "fingerprint=" + fingerprint
+                + " imageSendInFlight=" + imageSendInFlight)
+        }
+    }
+
     function debugPreviewText(text) {
         const safeText = typeof text === "string" ? text : ""
         return "len=" + safeText.length + " head=\""
@@ -59,6 +156,8 @@ ApplicationWindow {
     }
 
     function debugLog(event, details) {
+        if (!debugLogsEnabled)
+            return
         console.log("[NC QML] " + event + (details ? " " + details : ""))
     }
 
@@ -220,9 +319,14 @@ ApplicationWindow {
 
     function showPreviewImage(base64) {
         rawPreviewText = ""
-        if (rawPreviewImageBase64 === base64 && rawPreviewImageBase64.length > 0)
+        if (rawPreviewImageBase64 === base64 && rawPreviewImageBase64.length > 0) {
+            debugLog("preview image unchanged",
+                "base64Len=" + base64.length
+                + " source=" + (rawPreviewImageSource.length > 0 ? "file" : "data"))
             return
+        }
 
+        debugLog("preview image set", "base64Len=" + base64.length)
         rawPreviewImageBase64 = base64
         pendingPreviewImageBase64 = ""
         previewImageLoading = false
@@ -484,6 +588,38 @@ ApplicationWindow {
             + Math.max(0, clipboardHistoryModel.count - 1) * view.spacing
     }
 
+    function historyDesiredTileWidthForWidth(width) {
+        const containerWidth = clipboardBox && clipboardBox.width > 0
+            ? clipboardBox.width
+            : width
+        const widthFromGroupBox = Math.round(containerWidth * 0.07)
+        return Math.max(64, widthFromGroupBox)
+    }
+
+    function historyVisibleTileCountForWidth(width, spacing) {
+        if (width <= 0)
+            return 1
+
+        return Math.max(1, Math.floor((width + spacing)
+            / (historyDesiredTileWidthForWidth(width) + spacing)))
+    }
+
+    function historyTileWidthForWidth(width, spacing) {
+        const count = historyVisibleTileCountForWidth(width, spacing)
+        if (width <= 0)
+            return 64
+
+        return Math.max(64, Math.floor((width - spacing * (count - 1)) / count))
+    }
+
+    function historyContentWidthForWidth(width, spacing) {
+        if (clipboardHistoryModel.count <= 0)
+            return 0
+
+        return clipboardHistoryModel.count * historyTileWidthForWidth(width, spacing)
+            + Math.max(0, clipboardHistoryModel.count - 1) * spacing
+    }
+
     function historyMaxContentX(view) {
         if (!historyCanScroll(view))
             return 0
@@ -502,19 +638,14 @@ ApplicationWindow {
     }
 
     function historyDesiredTileWidth(view) {
-        const containerWidth = clipboardBox && clipboardBox.width > 0
-            ? clipboardBox.width
-            : (view ? view.width : 0)
-        const widthFromGroupBox = Math.round(containerWidth * 0.07)
-        return Math.max(64, widthFromGroupBox)
+        return historyDesiredTileWidthForWidth(view ? view.width : 0)
     }
 
     function historyVisibleTileCount(view) {
         if (!view || view.width <= 0)
             return 1
 
-        return Math.max(1, Math.floor((view.width + view.spacing)
-            / (historyDesiredTileWidth(view) + view.spacing)))
+        return historyVisibleTileCountForWidth(view.width, view.spacing)
     }
 
     function historyTileWidth(view) {
@@ -522,7 +653,7 @@ ApplicationWindow {
         if (!view || view.width <= 0)
             return 64
 
-        return Math.max(64, Math.floor((view.width - view.spacing * (count - 1)) / count))
+        return historyTileWidthForWidth(view.width, view.spacing)
     }
 
     function historyFirstVisibleIndex(view) {
@@ -1405,6 +1536,23 @@ ApplicationWindow {
         }
     }
 
+    Timer {
+        id: cameraImageReadyTimer
+        interval: 700
+        repeat: false
+        onTriggered: {
+            if (pendingCameraImageBase64.length === 0) {
+                cameraImageLoading = false
+                return
+            }
+
+            const base64 = pendingCameraImageBase64
+            pendingCameraImageBase64 = ""
+            cameraImageLoading = false
+            applyPhotoContent(base64)
+        }
+    }
+
     Connections {
         target: Qt.application
         function onStateChanged() {
@@ -1419,6 +1567,50 @@ ApplicationWindow {
         target: localClipboard
         function onClipboardChanged() {
             scheduleClipboardSync()
+        }
+        function onRecentPhotosLoaded(photos) {
+            recentPhotos = photos
+            photoGalleryLoading = false
+        }
+        function onPhotoContentLoaded(assetId, base64) {
+            if (assetId !== pendingSelectedPhotoId)
+                return
+
+            selectedPhotoApplying = false
+            pendingSelectedPhotoId = ""
+            debugLog("selected photo content loaded",
+                "assetId=" + assetId + " base64Len=" + base64.length)
+            if (base64.length > 0)
+                applyPhotoContent(base64)
+            else
+                photoApplyError = "Originalbild konnte nicht geladen werden."
+        }
+        function onCameraImageProcessingStarted() {
+            cameraImageLoading = true
+            cameraImageLoadingStartedAt = Date.now()
+            pendingCameraImageBase64 = ""
+            cameraApplyError = ""
+            debugLog("camera image processing started")
+        }
+        function onCameraImageCaptured(base64) {
+            cameraApplyError = ""
+            debugLog("camera image received", "base64Len=" + base64.length)
+            const remainingMs = Math.max(0, 700 - (Date.now() - cameraImageLoadingStartedAt))
+            if (remainingMs > 0) {
+                pendingCameraImageBase64 = base64
+                cameraImageReadyTimer.interval = remainingMs
+                cameraImageReadyTimer.restart()
+            } else {
+                cameraImageLoading = false
+                applyPhotoContent(base64)
+            }
+        }
+        function onCameraCaptureFailed(message) {
+            cameraImageLoading = false
+            pendingCameraImageBase64 = ""
+            if (message.length > 0)
+                cameraApplyError = message
+            debugLog("camera capture failed", message)
         }
     }
 
@@ -1750,11 +1942,276 @@ ApplicationWindow {
                     }
                 }
 
-                CheckBox {
-                    text: "Manuelle Serverwahl"
-                    checked: networkClipboard.manualServerSelection
-                    Layout.alignment: Qt.AlignLeft
-                    onToggled: networkClipboard.manualServerSelection = checked
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    CheckBox {
+                        text: "Manuelle Serverwahl"
+                        checked: networkClipboard.manualServerSelection
+                        Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
+                        onToggled: networkClipboard.manualServerSelection = checked
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+
+                    ToolButton {
+                        id: addServerButton
+                        text: "+"
+                        padding: 0
+                        Layout.preferredWidth: 38
+                        Layout.preferredHeight: 32
+                        Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Server hinzufügen"
+                        contentItem: Text {
+                            text: addServerButton.text
+                            color: "#111827"
+                            font.pixelSize: 24
+                            font.bold: true
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            radius: height / 2
+                            color: addServerButton.pressed ? "#d1d5db" : "#e5e7eb"
+                            border.color: "#9ca3af"
+                            border.width: 1
+                        }
+                        onClicked: {
+                            debugLog("add server button clicked")
+                            addContentActionsVisible = !addContentActionsVisible
+                        }
+                    }
+
+                    Popup {
+                        id: addContentPopup
+                        parent: Overlay.overlay
+                        x: Math.max(12, Math.min(root.width - width - 12,
+                            addServerButton.mapToItem(Overlay.overlay, 0, 0).x + addServerButton.width - width))
+                        y: addServerButton.mapToItem(Overlay.overlay, 0, 0).y + addServerButton.height + 8
+                        padding: 10
+                        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+                        background: Rectangle {
+                            radius: 18
+                            color: "#ffffff"
+                            border.color: "#d1d5db"
+                            border.width: 1
+                        }
+
+                        contentItem: RowLayout {
+                            spacing: 14
+
+                            ToolButton {
+                                Layout.preferredWidth: 74
+                                Layout.preferredHeight: 78
+                                padding: 0
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Fotos"
+                                contentItem: ColumnLayout {
+                                    spacing: 6
+                                    Rectangle {
+                                        Layout.alignment: Qt.AlignHCenter
+                                        width: 44
+                                        height: 44
+                                        radius: 22
+                                        color: "#7c3aed"
+                                        Canvas {
+                                            anchors.centerIn: parent
+                                            width: 24
+                                            height: 24
+                                            onPaint: {
+                                                const ctx = getContext("2d")
+                                                ctx.clearRect(0, 0, width, height)
+                                                ctx.strokeStyle = "#ffffff"
+                                                ctx.fillStyle = "#ffffff"
+                                                ctx.lineWidth = 2
+                                                ctx.strokeRect(4, 5, 16, 14)
+                                                ctx.beginPath()
+                                                ctx.arc(15.5, 9.5, 2, 0, Math.PI * 2)
+                                                ctx.fill()
+                                                ctx.beginPath()
+                                                ctx.moveTo(5, 18)
+                                                ctx.lineTo(10, 13)
+                                                ctx.lineTo(13, 16)
+                                                ctx.lineTo(16, 12)
+                                                ctx.lineTo(20, 18)
+                                                ctx.stroke()
+                                            }
+                                        }
+                                    }
+                                    Label {
+                                        Layout.alignment: Qt.AlignHCenter
+                                        text: "Fotos"
+                                        font.pixelSize: 12
+                                        color: "#111827"
+                                    }
+                                }
+                                background: Rectangle {
+                                    radius: 10
+                                    color: parent.pressed ? "#f3f4f6" : "transparent"
+                                }
+                                onClicked: {
+                                    addContentPopup.close()
+                                    debugLog("photos action clicked")
+                                }
+                            }
+
+                            ToolButton {
+                                Layout.preferredWidth: 74
+                                Layout.preferredHeight: 78
+                                padding: 0
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Kamera"
+                                contentItem: ColumnLayout {
+                                    spacing: 6
+                                    Rectangle {
+                                        Layout.alignment: Qt.AlignHCenter
+                                        width: 44
+                                        height: 44
+                                        radius: 22
+                                        color: "#ec4899"
+                                        Canvas {
+                                            anchors.centerIn: parent
+                                            width: 24
+                                            height: 24
+                                            onPaint: {
+                                                const ctx = getContext("2d")
+                                                ctx.clearRect(0, 0, width, height)
+                                                ctx.strokeStyle = "#ffffff"
+                                                ctx.lineWidth = 2
+                                                ctx.beginPath()
+                                                ctx.rect(4, 8, 16, 11)
+                                                ctx.stroke()
+                                                ctx.beginPath()
+                                                ctx.moveTo(8, 8)
+                                                ctx.lineTo(10, 5)
+                                                ctx.lineTo(14, 5)
+                                                ctx.lineTo(16, 8)
+                                                ctx.stroke()
+                                                ctx.beginPath()
+                                                ctx.arc(12, 13.5, 3.2, 0, Math.PI * 2)
+                                                ctx.stroke()
+                                            }
+                                        }
+                                    }
+                                    Label {
+                                        Layout.alignment: Qt.AlignHCenter
+                                        text: "Kamera"
+                                        font.pixelSize: 12
+                                        color: "#111827"
+                                    }
+                                }
+                                background: Rectangle {
+                                    radius: 10
+                                    color: parent.pressed ? "#f3f4f6" : "transparent"
+                                }
+                                onClicked: {
+                                    addContentPopup.close()
+                                    debugLog("camera action clicked")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    visible: false
+                    Layout.fillWidth: true
+                    Layout.columnSpan: serverControls.columns
+                    Layout.preferredHeight: 0
+                    radius: 16
+                    color: "#ffffff"
+                    border.color: "#d1d5db"
+                    border.width: 1
+
+                    RowLayout {
+                        anchors.centerIn: parent
+                        spacing: 18
+
+                        ToolButton {
+                            Layout.preferredWidth: 82
+                            Layout.preferredHeight: 72
+                            padding: 0
+                            contentItem: ColumnLayout {
+                                spacing: 5
+                                Text {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    text: "\u25a7"
+                                    color: "#ffffff"
+                                    font.pixelSize: 24
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: 44
+                                        height: 44
+                                        radius: 22
+                                        color: "#7c3aed"
+                                        z: -1
+                                    }
+                                }
+                                Label {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    text: "Fotos"
+                                    font.pixelSize: 12
+                                    color: "#111827"
+                                }
+                            }
+                            background: Rectangle {
+                                radius: 10
+                                color: parent.pressed ? "#f3f4f6" : "transparent"
+                            }
+                            onClicked: {
+                                addContentActionsVisible = false
+                                debugLog("photos action clicked")
+                            }
+                        }
+
+                        ToolButton {
+                            Layout.preferredWidth: 82
+                            Layout.preferredHeight: 72
+                            padding: 0
+                            contentItem: ColumnLayout {
+                                spacing: 5
+                                Text {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    text: "\u25c9"
+                                    color: "#ffffff"
+                                    font.pixelSize: 24
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: 44
+                                        height: 44
+                                        radius: 22
+                                        color: "#ec4899"
+                                        z: -1
+                                    }
+                                }
+                                Label {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    text: "Kamera"
+                                    font.pixelSize: 12
+                                    color: "#111827"
+                                }
+                            }
+                            background: Rectangle {
+                                radius: 10
+                                color: parent.pressed ? "#f3f4f6" : "transparent"
+                            }
+                            onClicked: {
+                                addContentActionsVisible = false
+                                debugLog("camera action clicked")
+                            }
+                        }
+                    }
                 }
             }
             }
@@ -1931,11 +2388,24 @@ ApplicationWindow {
                             cache: false
                             asynchronous: false
                             onStatusChanged: {
+                                debugLog("preview image status",
+                                    "status=" + status
+                                    + " base64Len=" + rawPreviewImageBase64.length
+                                    + " source=" + (rawPreviewImageSource.length > 0 ? "file" : "data")
+                                    + "painted=" + paintedWidth + "x" + paintedHeight
+                                    + "implicit=" + implicitWidth + "x" + implicitHeight)
                                 if (status === Image.Error
                                         && !triedFileFallback
                                         && rawPreviewImageBase64.length > 0) {
                                     triedFileFallback = true
                                     rawPreviewImageSource = localClipboard.setPreviewImageBase64(rawPreviewImageBase64)
+                                    debugLog("preview image fallback requested",
+                                        "fallbackSourceLen=" + rawPreviewImageSource.length
+                                        + " base64Len=" + rawPreviewImageBase64.length)
+                                } else if (status === Image.Error) {
+                                    debugLog("preview image failed",
+                                        "fallbackTried=" + triedFileFallback
+                                        + " source=" + (rawPreviewImageSource.length > 0 ? rawPreviewImageSource : "data-url"))
                                 }
                             }
                         }
@@ -1951,6 +2421,11 @@ ApplicationWindow {
                     Item {
                         property int historyScrollbarGap: 5
                         property int historyScrollbarHeight: 12
+                        property int historySpacing: 6
+                        property int historyArrowSpace: 72
+                        property real historyViewportWidth: Math.max(0, width - historyArrowSpace)
+                        property bool historyHasOverflow: historyContentWidthForWidth(historyViewportWidth, historySpacing)
+                            > historyViewportWidth + 1
                         Layout.fillWidth: true
                         Layout.preferredHeight: Math.max(102, historyDesiredTileWidth(historyListView)
                             + historyScrollbarGap * 2 + historyScrollbarHeight)
@@ -1967,9 +2442,9 @@ ApplicationWindow {
                             id: historyListView
                             visible: clipboardHistoryModel.count > 0
                             anchors.left: parent.left
-                            anchors.leftMargin: historyCanScroll(historyListView) ? 36 : 0
+                            anchors.leftMargin: parent.historyHasOverflow ? 36 : 0
                             anchors.right: parent.right
-                            anchors.rightMargin: historyCanScroll(historyListView) ? 36 : 0
+                            anchors.rightMargin: parent.historyHasOverflow ? 36 : 0
                             anchors.top: parent.top
                             height: Math.max(72, parent.height
                                 - parent.historyScrollbarGap * 2
@@ -1977,7 +2452,7 @@ ApplicationWindow {
                             clip: true
                             currentIndex: currentPreviewHistoryIndex
                             orientation: ListView.Horizontal
-                            spacing: 6
+                            spacing: parent.historySpacing
                             boundsBehavior: Flickable.StopAtBounds
                             snapMode: ListView.SnapToItem
                             model: clipboardHistoryModel
@@ -2120,7 +2595,7 @@ ApplicationWindow {
 
                         Rectangle {
                             id: historyScrollbarTrack
-                            visible: historyListView.visible && historyCanScroll(historyListView)
+                            visible: historyListView.visible && parent.historyHasOverflow
                             anchors.left: historyListView.left
                             anchors.right: historyListView.right
                             anchors.top: historyListView.bottom
@@ -2147,7 +2622,7 @@ ApplicationWindow {
                             id: historyScrollbarTouchArea
                             property real pressContentX: 0
                             property real pressX: 0
-                            visible: historyListView.visible && historyCanScroll(historyListView)
+                            visible: historyListView.visible && parent.historyHasOverflow
                             anchors.left: historyListView.left
                             anchors.right: historyListView.right
                             anchors.top: historyListView.bottom
@@ -2198,7 +2673,7 @@ ApplicationWindow {
 
                         Rectangle {
                             visible: historyListView.visible
-                                     && historyListView.contentWidth > historyListView.width + 1
+                                     && parent.historyHasOverflow
                                      && historyListView.contentX < historyMaxContentX(historyListView) - 1
                             anchors.right: parent.right
                             anchors.top: parent.top
@@ -2248,6 +2723,338 @@ ApplicationWindow {
             text: networkClipboard.status
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
+        }
+
+        Label {
+            visible: cameraImageLoading
+            text: "Bild wird geladen ..."
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            color: "#6b7280"
+        }
+
+        Label {
+            visible: cameraApplyError.length > 0
+            text: cameraApplyError
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            color: "#b91c1c"
+        }
+    }
+
+    Item {
+        id: photoGalleryOverlay
+        anchors.fill: parent
+        visible: photoGalleryVisible
+        z: 120
+
+        Rectangle {
+            anchors.fill: parent
+            color: "#f9fafb"
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 14
+            spacing: 12
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+
+                ToolButton {
+                    text: "<"
+                    Layout.preferredWidth: 42
+                    Layout.preferredHeight: 36
+                    contentItem: Text {
+                        text: parent.text
+                        color: "#111827"
+                        font.pixelSize: 22
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                    background: Rectangle {
+                        radius: 18
+                        color: parent.pressed ? "#d1d5db" : "#e5e7eb"
+                    }
+                    onClicked: photoGalleryVisible = false
+                }
+
+                Label {
+                    text: "Fotos"
+                    font.pixelSize: 22
+                    font.bold: true
+                    color: "#111827"
+                    Layout.fillWidth: true
+                }
+
+                Button {
+                    text: selectedPhotoApplying ? "Lade ..." : "Übernehmen"
+                    enabled: selectedPhotoIndex >= 0 && !selectedPhotoApplying
+                    Layout.preferredHeight: 36
+                    background: Rectangle {
+                        radius: 18
+                        color: parent.enabled
+                            ? (parent.pressed ? "#15803d" : "#16a34a")
+                            : "#d1d5db"
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        color: parent.enabled ? "#ffffff" : "#6b7280"
+                        font.pixelSize: 14
+                        font.bold: true
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                    onClicked: applySelectedPhoto()
+                }
+            }
+
+            Label {
+                visible: photoGalleryLoading
+                Layout.fillWidth: true
+                text: "Fotos werden geladen ..."
+                color: "#6b7280"
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            Label {
+                visible: photoApplyError.length > 0
+                Layout.fillWidth: true
+                text: photoApplyError
+                color: "#b91c1c"
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+            }
+
+            Label {
+                visible: !photoGalleryLoading && recentPhotos.length === 0
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                text: "Keine Fotos verfügbar"
+                color: "#6b7280"
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            GridView {
+                visible: !photoGalleryLoading && recentPhotos.length > 0
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                cellWidth: Math.max(88, Math.floor(width / (root.compactLayout ? 3 : 4)))
+                cellHeight: cellWidth
+                model: recentPhotos
+                delegate: Rectangle {
+                    width: GridView.view.cellWidth - 6
+                    height: width
+                    radius: 4
+                    color: selectedPhotoIndex === index ? "#dcfce7" : "#e5e7eb"
+                    border.color: selectedPhotoIndex === index ? "#16a34a" : "transparent"
+                    border.width: selectedPhotoIndex === index ? 4 : 0
+                    clip: true
+
+                    Image {
+                        anchors.fill: parent
+                        anchors.margins: selectedPhotoIndex === index ? 4 : 0
+                        source: modelData.thumbnail ? "data:image/png;base64," + modelData.thumbnail : ""
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                        cache: true
+                    }
+
+                    Rectangle {
+                        visible: selectedPhotoIndex === index
+                        width: 26
+                        height: 26
+                        radius: 13
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 6
+                        color: "#16a34a"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "✓"
+                            color: "#ffffff"
+                            font.pixelSize: 17
+                            font.bold: true
+                        }
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: selectedPhotoIndex = index
+                    }
+                }
+            }
+        }
+    }
+
+    Item {
+        id: addContentOverlay
+        anchors.fill: parent
+        visible: addContentActionsVisible
+        z: 100
+        property point buttonPos: visible ? addServerButton.mapToItem(addContentOverlay, 0, 0) : Qt.point(0, 0)
+
+        Rectangle {
+            anchors.fill: parent
+            color: "#000000"
+            opacity: 0.14
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: addContentActionsVisible = false
+        }
+
+        Rectangle {
+            id: addContentActionPanel
+            width: 190
+            height: 94
+            radius: 18
+            color: "#ffffff"
+            border.color: "#d1d5db"
+            border.width: 1
+            x: Math.max(12, Math.min(addContentOverlay.width - width - 12,
+                addContentOverlay.buttonPos.x + addServerButton.width - width))
+            y: Math.max(12, Math.min(addContentOverlay.height - height - 12,
+                addContentOverlay.buttonPos.y + addServerButton.height + 8))
+
+            MouseArea {
+                anchors.fill: parent
+                onClicked: mouse.accepted = true
+            }
+
+            RowLayout {
+                anchors.centerIn: parent
+                spacing: 18
+
+                ToolButton {
+                    Layout.preferredWidth: 82
+                    Layout.preferredHeight: 76
+                    padding: 0
+                    contentItem: ColumnLayout {
+                        spacing: 5
+                        Text {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: "\u25a7"
+                            color: "#ffffff"
+                            font.pixelSize: 24
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 46
+                                height: 46
+                                radius: 23
+                                color: "#7c3aed"
+                                z: -1
+                            }
+                        }
+                        Label {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: "Fotos"
+                            font.pixelSize: 12
+                            color: "#111827"
+                        }
+                    }
+                    background: Rectangle {
+                        radius: 10
+                        color: parent.pressed ? "#f3f4f6" : "transparent"
+                    }
+                    onClicked: {
+                        addContentActionsVisible = false
+                        debugLog("photos action clicked")
+                        openPhotoGallery()
+                    }
+                }
+
+                ToolButton {
+                    Layout.preferredWidth: 82
+                    Layout.preferredHeight: 76
+                    padding: 0
+                    contentItem: ColumnLayout {
+                        spacing: 5
+                        Text {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: "\u25c9"
+                            color: "#ffffff"
+                            font.pixelSize: 24
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 46
+                                height: 46
+                                radius: 23
+                                color: "#ec4899"
+                                z: -1
+                            }
+                        }
+                        Label {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: "Kamera"
+                            font.pixelSize: 12
+                            color: "#111827"
+                        }
+                    }
+                    background: Rectangle {
+                        radius: 10
+                        color: parent.pressed ? "#f3f4f6" : "transparent"
+                    }
+                    onClicked: {
+                        addContentActionsVisible = false
+                        debugLog("camera action clicked")
+                        openCameraCapture()
+                    }
+                }
+            }
+        }
+    }
+
+    Item {
+        anchors.fill: parent
+        visible: cameraImageLoading
+        z: 110
+
+        Rectangle {
+            anchors.fill: parent
+            color: "#000000"
+            opacity: 0.18
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 48, 240)
+            height: 82
+            radius: 12
+            color: "#ffffff"
+            border.color: "#d1d5db"
+
+            ColumnLayout {
+                anchors.centerIn: parent
+                spacing: 8
+
+                BusyIndicator {
+                    running: cameraImageLoading
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.preferredWidth: 26
+                    Layout.preferredHeight: 26
+                }
+
+                Label {
+                    text: "Bild wird geladen ..."
+                    color: "#111827"
+                    font.pixelSize: 14
+                    font.bold: true
+                    horizontalAlignment: Text.AlignHCenter
+                    Layout.alignment: Qt.AlignHCenter
+                }
+            }
         }
     }
 
