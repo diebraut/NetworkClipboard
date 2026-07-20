@@ -43,6 +43,7 @@ ApplicationWindow {
     property double cameraImageLoadingStartedAt: 0
     property string pendingCameraImageBase64: ""
     property string cameraApplyError: ""
+    property int pendingDeleteHistoryIndex: -1
 
     function deviceName() {
         return Qt.platform.os === "ios" ? "iPhone" : "Android"
@@ -950,6 +951,41 @@ ApplicationWindow {
         return currentPreviewHistoryIndex
     }
 
+    function canDeleteHistoryEntry(index) {
+        return index > 0 && index < clipboardHistoryModel.count
+    }
+
+    function requestDeleteSelectedHistoryEntry() {
+        if (!canDeleteHistoryEntry(currentPreviewHistoryIndex))
+            return
+
+        pendingDeleteHistoryIndex = currentPreviewHistoryIndex
+        deleteHistoryEntryDialog.open()
+    }
+
+    function deleteHistoryEntry(index) {
+        if (!canDeleteHistoryEntry(index))
+            return
+
+        clipboardHistoryModel.remove(index)
+        saveClipboardHistory()
+        pendingDeleteHistoryIndex = -1
+
+        if (clipboardHistoryModel.count === 0) {
+            currentPreviewHistoryIndex = -1
+            currentPreviewHistoryKey = ""
+            currentPreviewFromLocalClipboard = false
+            rawPreviewText = ""
+            rawPreviewImageBase64 = ""
+            pendingPreviewImageBase64 = ""
+            previewImageLoading = false
+            return
+        }
+
+        const nextIndex = Math.max(0, Math.min(index, clipboardHistoryModel.count - 1))
+        selectHistoryEntry(nextIndex)
+    }
+
     function historyEntrySnapshot(entry) {
         return {
             "type": entry.type,
@@ -1504,21 +1540,21 @@ ApplicationWindow {
                         id: addServerButton
                         text: "+"
                         padding: 0
-                        Layout.preferredWidth: 38
-                        Layout.preferredHeight: 32
+                        Layout.preferredWidth: 36
+                        Layout.preferredHeight: 36
                         Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                         ToolTip.visible: hovered
                         ToolTip.text: "Server hinzufügen"
                         contentItem: Text {
                             text: addServerButton.text
                             color: "#111827"
-                            font.pixelSize: 24
+                            font.pixelSize: 22
                             font.bold: true
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                         }
                         background: Rectangle {
-                            radius: height / 2
+                            radius: width / 2
                             color: addServerButton.pressed ? "#d1d5db" : "#e5e7eb"
                             border.color: "#9ca3af"
                             border.width: 1
@@ -1861,6 +1897,60 @@ ApplicationWindow {
                             visible: previewImageLoading
                             running: visible
                             Layout.alignment: Qt.AlignHCenter
+                        }
+
+                        RowLayout {
+                            visible: canDeleteHistoryEntry(currentPreviewHistoryIndex)
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignRight
+                            spacing: 8
+
+                            ToolButton {
+                                id: deleteHistoryEntryButton
+                                Layout.preferredWidth: 36
+                                Layout.preferredHeight: 36
+                                padding: 0
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Eintrag löschen"
+                                contentItem: Item {
+                                    Canvas {
+                                        anchors.centerIn: parent
+                                        width: 20
+                                        height: 20
+                                        onPaint: {
+                                            const ctx = getContext("2d")
+                                            ctx.clearRect(0, 0, width, height)
+                                            ctx.strokeStyle = "#ffffff"
+                                            ctx.lineWidth = 2
+                                            ctx.lineCap = "round"
+                                            ctx.lineJoin = "round"
+                                            ctx.beginPath()
+                                            ctx.moveTo(5, 6)
+                                            ctx.lineTo(15, 6)
+                                            ctx.moveTo(8, 6)
+                                            ctx.lineTo(8, 17)
+                                            ctx.moveTo(12, 6)
+                                            ctx.lineTo(12, 17)
+                                            ctx.moveTo(6, 6)
+                                            ctx.lineTo(7, 18)
+                                            ctx.lineTo(13, 18)
+                                            ctx.lineTo(14, 6)
+                                            ctx.moveTo(4, 4)
+                                            ctx.lineTo(16, 4)
+                                            ctx.moveTo(8, 4)
+                                            ctx.lineTo(9, 2)
+                                            ctx.lineTo(11, 2)
+                                            ctx.lineTo(12, 4)
+                                            ctx.stroke()
+                                        }
+                                    }
+                                }
+                                background: Rectangle {
+                                    radius: width / 2
+                                    color: deleteHistoryEntryButton.pressed ? "#991b1b" : "#dc2626"
+                                }
+                                onClicked: requestDeleteSelectedHistoryEntry()
+                            }
                         }
 
                     }
@@ -2476,6 +2566,22 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+    }
+
+    Dialog {
+        id: deleteHistoryEntryDialog
+        title: "Eintrag löschen"
+        modal: true
+        standardButtons: Dialog.Yes | Dialog.No
+        anchors.centerIn: parent
+        onAccepted: deleteHistoryEntry(pendingDeleteHistoryIndex)
+        onRejected: pendingDeleteHistoryIndex = -1
+
+        Label {
+            width: Math.min(deleteHistoryEntryDialog.availableWidth, 340)
+            wrapMode: Text.WordWrap
+            text: "Soll dieser Eintrag wirklich aus dem Verlauf gelöscht werden?"
         }
     }
 }
