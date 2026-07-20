@@ -1206,6 +1206,30 @@ ApplicationWindow {
         return currentPreviewHistoryIndex
     }
 
+    function canSwipeHistoryPreview(direction) {
+        if (clipboardHistoryModel.count <= 1 || currentPreviewHistoryIndex < 0)
+            return false
+
+        const targetIndex = currentPreviewHistoryIndex + direction
+        if (targetIndex < 0 || targetIndex >= clipboardHistoryModel.count)
+            return false
+        if (isServerUnavailableEntry(clipboardHistoryModel.get(targetIndex)))
+            return false
+
+        return true
+    }
+
+    function swipeHistoryPreview(direction) {
+        if (!canSwipeHistoryPreview(direction))
+            return
+
+        const targetIndex = currentPreviewHistoryIndex + direction
+        selectHistoryEntry(targetIndex)
+        Qt.callLater(function() {
+            historyListView.positionViewAtIndex(targetIndex, ListView.Contain)
+        })
+    }
+
     function canDeleteHistoryEntry(index) {
         return index > 0
             && index < clipboardHistoryModel.count
@@ -2442,6 +2466,26 @@ ApplicationWindow {
                                     debugLog("preview image failed",
                                         "fallbackTried=" + triedFileFallback
                                         + " source=" + (rawPreviewImageSource.length > 0 ? rawPreviewImageSource : "data-url"))
+                                }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                property real pressX: 0
+                                property real pressY: 0
+
+                                onPressed: function(mouse) {
+                                    pressX = mouse.x
+                                    pressY = mouse.y
+                                }
+                                onReleased: function(mouse) {
+                                    const dx = mouse.x - pressX
+                                    const dy = mouse.y - pressY
+                                    const threshold = Math.max(42, width * 0.12)
+                                    if (Math.abs(dx) < threshold || Math.abs(dx) < Math.abs(dy) * 1.25)
+                                        return
+
+                                    swipeHistoryPreview(dx < 0 ? 1 : -1)
                                 }
                             }
                         }
