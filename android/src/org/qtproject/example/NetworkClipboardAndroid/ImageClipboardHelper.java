@@ -26,6 +26,7 @@ public final class ImageClipboardHelper
     private static final String TAG = "NCImageClipboard";
     private static final int MAX_IMAGE_BYTES = 10 * 1024 * 1024;
     private static final int MAX_PHOTO_BYTES = 500 * 1024;
+    private static final int MAX_PHOTO_DIMENSION = 1024;
 
     private ImageClipboardHelper()
     {
@@ -147,14 +148,18 @@ public final class ImageClipboardHelper
             MediaStore.Images.Media.DATE_TAKEN,
             MediaStore.Images.Media.DATE_ADDED
         };
-        String sortOrder = MediaStore.Images.Media.DATE_ADDED + " DESC";
+        String sortOrder = MediaStore.Images.Media.DATE_TAKEN + " DESC, "
+            + MediaStore.Images.Media.DATE_ADDED + " DESC, "
+            + MediaStore.Images.Media._ID + " DESC";
+        String selection = MediaStore.Images.Media.BUCKET_DISPLAY_NAME + " = ?";
+        String[] selectionArgs = new String[] { "Camera" };
 
         int added = 0;
         try (Cursor cursor = context.getContentResolver().query(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                 projection,
-                null,
-                null,
+                selection,
+                selectionArgs,
                 sortOrder)) {
             if (cursor == null)
                 return "[]";
@@ -201,7 +206,7 @@ public final class ImageClipboardHelper
             return "";
 
         try {
-            Bitmap bitmap = loadBitmap(context, Uri.parse(uriText), 4096);
+            Bitmap bitmap = loadBitmap(context, Uri.parse(uriText), MAX_PHOTO_DIMENSION);
             String base64 = pngBase64(bitmap, MAX_PHOTO_BYTES);
             if (bitmap != null)
                 bitmap.recycle();
@@ -254,7 +259,7 @@ public final class ImageClipboardHelper
             return "";
 
         try {
-            Bitmap bitmap = loadBitmap(context, Uri.parse(uriText), 4096);
+            Bitmap bitmap = loadBitmap(context, Uri.parse(uriText), MAX_PHOTO_DIMENSION);
             String base64 = pngBase64(bitmap, MAX_PHOTO_BYTES);
             if (bitmap != null)
                 bitmap.recycle();
@@ -347,9 +352,23 @@ public final class ImageClipboardHelper
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, maxSize);
             options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            Bitmap decoded;
             try (InputStream input = context.getContentResolver().openInputStream(uri)) {
-                return BitmapFactory.decodeStream(input, null, options);
+                decoded = BitmapFactory.decodeStream(input, null, options);
             }
+            if (decoded == null)
+                return null;
+
+            int longestSide = Math.max(decoded.getWidth(), decoded.getHeight());
+            if (longestSide <= maxSize)
+                return decoded;
+
+            float scale = (float)maxSize / (float)longestSide;
+            int width = Math.max(1, Math.round(decoded.getWidth() * scale));
+            int height = Math.max(1, Math.round(decoded.getHeight() * scale));
+            Bitmap scaled = Bitmap.createScaledBitmap(decoded, width, height, true);
+            decoded.recycle();
+            return scaled;
         } catch (Exception exception) {
             Log.w(TAG, "loadBitmap failed uri=" + uri + " error=" + exception);
             return null;
@@ -370,7 +389,7 @@ public final class ImageClipboardHelper
             return "";
 
         Bitmap bitmap = source;
-        for (int attempt = 0; attempt < 20; ++attempt) {
+        for (int attempt = 0; attempt < 6; ++attempt) {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
                 return "";
@@ -378,8 +397,10 @@ public final class ImageClipboardHelper
             if (maxBytes <= 0 || data.length <= maxBytes)
                 return Base64.encodeToString(data, Base64.NO_WRAP);
 
-            int nextWidth = Math.max(1, Math.round(bitmap.getWidth() * 0.8f));
-            int nextHeight = Math.max(1, Math.round(bitmap.getHeight() * 0.8f));
+            float scale = (float)(Math.sqrt((double)maxBytes / (double)data.length) * 0.92);
+            scale = Math.max(0.25f, Math.min(0.80f, scale));
+            int nextWidth = Math.max(1, Math.round(bitmap.getWidth() * scale));
+            int nextHeight = Math.max(1, Math.round(bitmap.getHeight() * scale));
             if (nextWidth == bitmap.getWidth() && nextHeight == bitmap.getHeight())
                 break;
             Bitmap scaled = Bitmap.createScaledBitmap(bitmap, nextWidth, nextHeight, true);

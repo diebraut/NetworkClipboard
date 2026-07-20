@@ -28,6 +28,7 @@ public:
     Q_INVOKABLE void loadRecentPhotos(int maxCount = 30);
     Q_INVOKABLE void loadPhotoContent(const QString &assetId);
     Q_INVOKABLE void openCamera();
+    Q_INVOKABLE void finishPendingCameraCapture();
 
 signals:
     void textChanged();
@@ -47,4 +48,5 @@ private:
     mutable QString m_cachedImageKey;
     mutable QString m_cachedImageFingerprint;
     mutable QString m_cachedImageBase64;
+    bool m_cameraCapturePending = false;
 };

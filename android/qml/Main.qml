@@ -1234,6 +1234,7 @@ ApplicationWindow {
         target: Qt.application
         function onStateChanged() {
             if (appInForeground()) {
+                localClipboard.finishPendingCameraCapture()
                 scheduleClipboardSync()
                 refreshNetworkClipboard(false)
             }
