@@ -1898,6 +1898,33 @@ ApplicationWindow {
                                     color: "transparent"
                                     border.width: 0
                                 }
+
+                                DragHandler {
+                                    target: null
+                                    grabPermissions: PointerHandler.CanTakeOverFromAnything
+                                        | PointerHandler.ApprovesTakeOverByAnything
+                                    xAxis.enabled: true
+                                    yAxis.enabled: false
+                                    property bool swipeHandled: false
+                                    onActiveChanged: {
+                                        if (active) {
+                                            swipeHandled = false
+                                            return
+                                        }
+                                    }
+
+                                    onTranslationChanged: {
+                                        if (!active || swipeHandled)
+                                            return
+                                        const dx = translation.x
+                                        const threshold = Math.max(42, parent.width * 0.12)
+                                        if (Math.abs(dx) < threshold)
+                                            return
+
+                                        swipeHandled = true
+                                        swipeHistoryPreview(dx < 0 ? 1 : -1)
+                                    }
+                                }
                             }
                         }
 

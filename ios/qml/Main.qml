@@ -163,24 +163,13 @@ ApplicationWindow {
     }
 
     function syncClipboardToPreview() {
-        if (Date.now() < localClipboardSyncPausedUntil) {
-            clipboardSyncRetries = 0
-            return
-        }
-
-        if (networkClipboard.serverActive && isBrowsingHistoryEntry()) {
-            clipboardSyncRetries = 0
-            return
-        }
-
-        if (initialServerReadPending || (networkClipboard.serverActive && waitingForServerText)) {
-            clipboardSyncRetries = 0
-            return
-        }
-
         let pasteboardChangeCount = -1
+        let pasteboardChanged = false
         if (Qt.platform.os === "ios") {
             pasteboardChangeCount = localClipboard.pasteboardChangeCount()
+            pasteboardChanged = observedPasteboardChangeCount >= 0
+                && pasteboardChangeCount >= 0
+                && pasteboardChangeCount !== observedPasteboardChangeCount
             if (pasteboardChangeCount >= 0
                     && pasteboardChangeCount === observedPasteboardChangeCount
                     && !pendingAutoSendImageFingerprint
@@ -188,6 +177,29 @@ ApplicationWindow {
                 clipboardSyncRetries = 0
                 return
             }
+        }
+
+        if (Date.now() < localClipboardSyncPausedUntil && !pasteboardChanged) {
+            clipboardSyncRetries = 0
+            return
+        }
+
+        if (pasteboardChanged) {
+            localClipboardSyncPausedUntil = 0
+            initialServerReadPending = false
+            initialServerReadTimer.stop()
+            cancelForcedServerPreview()
+        }
+
+        if (networkClipboard.serverActive && isBrowsingHistoryEntry() && !pasteboardChanged) {
+            clipboardSyncRetries = 0
+            return
+        }
+
+        if ((initialServerReadPending || (networkClipboard.serverActive && waitingForServerText))
+                && !pasteboardChanged) {
+            clipboardSyncRetries = 0
+            return
         }
 
         if (localClipboard.hasImage()) {
@@ -262,7 +274,8 @@ ApplicationWindow {
         if (Date.now() < localClipboardSyncPausedUntil)
             return
 
-        if (networkClipboard.serverActive && isBrowsingHistoryEntry())
+        if (networkClipboard.serverActive && isBrowsingHistoryEntry()
+                && Qt.platform.os !== "ios")
             return
 
         clipboardSyncRetries = Qt.platform.os === "ios" ? 20 : 12
@@ -1617,8 +1630,15 @@ ApplicationWindow {
         target: Qt.application
         function onStateChanged() {
             if (appInForeground()) {
+                const pasteboardChangeCount = Qt.platform.os === "ios"
+                    ? localClipboard.pasteboardChangeCount()
+                    : -1
+                const hasNewPasteboardContent = observedPasteboardChangeCount >= 0
+                    && pasteboardChangeCount >= 0
+                    && pasteboardChangeCount !== observedPasteboardChangeCount
                 scheduleClipboardSync()
-                refreshNetworkClipboard(false)
+                if (!hasNewPasteboardContent)
+                    refreshNetworkClipboard(false)
             }
         }
     }
@@ -2425,6 +2445,33 @@ ApplicationWindow {
                                 background: Rectangle {
                                     color: "transparent"
                                     border.width: 0
+                                }
+
+                                DragHandler {
+                                    target: null
+                                    grabPermissions: PointerHandler.CanTakeOverFromAnything
+                                        | PointerHandler.ApprovesTakeOverByAnything
+                                    xAxis.enabled: true
+                                    yAxis.enabled: false
+                                    property bool swipeHandled: false
+                                    onActiveChanged: {
+                                        if (active) {
+                                            swipeHandled = false
+                                            return
+                                        }
+                                    }
+
+                                    onTranslationChanged: {
+                                        if (!active || swipeHandled)
+                                            return
+                                        const dx = translation.x
+                                        const threshold = Math.max(42, parent.width * 0.12)
+                                        if (Math.abs(dx) < threshold)
+                                            return
+
+                                        swipeHandled = true
+                                        swipeHistoryPreview(dx < 0 ? 1 : -1)
+                                    }
                                 }
                             }
                         }
