@@ -617,6 +617,9 @@ void TrayController::showContent()
             entry.deviceId = m_deviceId;
             entry.deviceName = m_deviceName;
             entry.timestamp = QDateTime::currentSecsSinceEpoch();
+            // This is an explicit user action. Apply the selected entry here;
+            // normal uploads must never rewrite their source clipboard data.
+            applyNetworkEntryToClipboard(entry, false, true);
             sendEntryToServer(entry, true);
         });
     }
@@ -848,14 +851,8 @@ void TrayController::publishDownloadedImageUrl(const QUrl &imageUrl,
         reply->deleteLater();
 
         if (!image.isNull()) {
-            const QByteArray pngData = imagePngData(image);
-            const QByteArray hash = imageHash(QImage::fromData(pngData, "PNG"));
-            if (!hash.isEmpty()) {
-                m_ignoreClipboardChangesUntil = QDateTime::currentMSecsSinceEpoch() + ClipboardIgnoreWindowMs;
-                m_ignoredClipboardContent.clear();
-                m_ignoredClipboardImageHash = hash;
-                m_clipboard->setImage(image);
-            }
+            // Upload the resolved image without replacing the local clipboard
+            // content (for example, the image URL that triggered the upload).
             publishClipboardImage(image, showSuccessMessage, force);
             return;
         }
@@ -1217,7 +1214,6 @@ void TrayController::postEntryToServer(const ClipboardEntry &entry, bool showSuc
                 m_lastPublishedContent = entry.content;
                 m_lastPublishedImageHash.clear();
             }
-            applyNetworkEntryToClipboard(entry, false, true);
             if (showSuccessMessage)
                 m_tray.showMessage(QStringLiteral("Network Clipboard"), QStringLiteral("Sent Windows clipboard to server."));
         }
