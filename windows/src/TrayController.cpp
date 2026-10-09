@@ -25,9 +25,17 @@
 #include <QUdpSocket>
 #include <QUuid>
 
+#include <windows.h>
+
 namespace {
 constexpr qint64 ClipboardIgnoreWindowMs = 1500;
 constexpr qint64 RecentImagePublishSuppressMs = 6000;
+
+bool clipboardContainsFileDrop()
+{
+    // Explorer file operations rely on CF_HDROP and its copy/move metadata.
+    return IsClipboardFormatAvailable(CF_HDROP) != FALSE;
+}
 
 QByteArray imagePngData(const QImage &sourceImage)
 {
@@ -443,6 +451,9 @@ void TrayController::processClipboardChange()
     if (now < m_ignoreClipboardChangesUntil)
         return;
 
+    if (clipboardContainsFileDrop())
+        return;
+
     const QMimeData *mimeData = m_clipboard->mimeData();
 
     if (mimeData && mimeData->hasImage()) {
@@ -710,6 +721,12 @@ bool TrayController::updateContentWindowFromLatestNetworkImage()
 
 void TrayController::sendCurrentClipboard()
 {
+    if (clipboardContainsFileDrop()) {
+        m_tray.showMessage(QStringLiteral("Network Clipboard"),
+                           QStringLiteral("File and folder copies stay in the Windows clipboard."));
+        return;
+    }
+
     const QMimeData *mimeData = m_clipboard->mimeData();
     if (mimeData && mimeData->hasImage()) {
         const QImage image = m_clipboard->image();
@@ -870,6 +887,9 @@ void TrayController::publishDownloadedImageUrl(const QUrl &imageUrl,
 void TrayController::publishCurrentClipboardIfAvailable(bool force)
 {
     if (!m_autoSendEnabled || !m_serviceRunning || m_token.isEmpty() || !m_serverUrl.isValid())
+        return;
+
+    if (clipboardContainsFileDrop())
         return;
 
     const QMimeData *mimeData = m_clipboard->mimeData();
@@ -1268,6 +1288,13 @@ void TrayController::applyNetworkEntryToClipboard(const ClipboardEntry &entry, b
 
     if (!allowOwnEntry && entry.id.isEmpty() && entry.content == m_lastSeenNetworkContent)
         return;
+
+    // Preserve Explorer file lists during background server polling.
+    // Explicit Paste from Network can still replace the clipboard.
+    if (!allowOwnEntry && clipboardContainsFileDrop()) {
+        m_lastSeenNetworkEntryId = entry.id;
+        return;
+    }
 
     if (entry.type == QStringLiteral("image")) {
         const QByteArray pngData = QByteArray::fromBase64(entry.content.toLatin1());
